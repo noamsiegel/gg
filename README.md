@@ -14,12 +14,13 @@ User-owned safety checks:
 | `pre-commit` | `large-files` | `SKIP_LARGE_FILES` | Refuse staged blobs over `MAX_BLOB_SIZE` |
 | `pre-commit` | `gitleaks` | `SKIP_GITLEAKS` | Detect secrets in staged changes |
 | `pre-commit` | `actionlint` | `SKIP_ACTIONLINT` | Validate `.github/workflows` YAML |
+| `pre-commit` | `python-bugs` | `SKIP_PYTHON_BUGS` | Flag staged Python that is broken in any repo (`F821`/`F822`/`F823`/`F811`/`E902`) |
 | `commit-msg` | `commitlint` | `SKIP_COMMITLINT` | Enforce Conventional Commits format |
 | `pre-push` | `fallow` | `SKIP_FALLOW` | Run universal code-health gate for JS/TS |
 
 ## What it doesn't do
 
-- It does not replace repo-owned lint, format, typecheck, test suites, or project-specific CI; `ruff`, `biome`, `ty`, `eslint`, `prettier`, `tsc`, `mypy`, `vitest`, and custom commands stay in each repo's own hooks or CI.
+- It does not replace repo-owned lint, format, typecheck, test suites, or project-specific CI; `ruff check`, `biome`, `ty`, `eslint`, `prettier`, `tsc`, `mypy`, `vitest`, and custom commands stay in each repo's own hooks or CI. The bar is a repo-independent verdict, not the tool: `python-bugs` uses Ruff as an engine but runs `--isolated` over a fixed bug-only rule set, so it never reads or enforces repo style policy.
 - It does not offer a plugin framework. The curated universal registry is the product boundary.
 - It does not trust repo-local config to weaken user-owned safety checks; opt-out lives under `~/.config/git-guardrails/`, not in the repo.
 - It does not hide or replace existing hook managers. It installs safely beside them or prints compose snippets for explicit chaining.
@@ -98,10 +99,11 @@ fi
 
 | Goal | How |
 |---|---|
-| Skip one check, once | `SKIP_GITLEAKS=1 git commit ...` (also `SKIP_ACTIONLINT`, `SKIP_LARGE_FILES`, `SKIP_COMMITLINT`, `SKIP_BRANCH_GUARD`, `SKIP_FALLOW`) |
+| Skip one check, once | `SKIP_GITLEAKS=1 git commit ...` (also `SKIP_ACTIONLINT`, `SKIP_LARGE_FILES`, `SKIP_COMMITLINT`, `SKIP_BRANCH_GUARD`, `SKIP_FALLOW`, `SKIP_PYTHON_BUGS`) |
 | Allow push to protected branch once | `ALLOW_PROTECTED_PUSH=1 git push ...` |
 | Raise large-file threshold | `LARGE_FILE_LIMIT_MB=20 git commit ...` |
 | Pin fallow to a different version | `FALLOW_VERSION=2.45.0 git push ...` |
+| Pin ruff to a different version | `RUFF_VERSION=0.13.0 git commit ...` |
 | Skip all git-guardrails checks for one invocation | `GIT_GUARDRAILS_SKIP=1 git commit ...` |
 | Opt out a repo permanently | Add canonical path to `~/.config/git-guardrails/.opt-out`, one per line |
 | Override PATH for non-standard tool locations | Drop `~/.config/git-guardrails/init.sh` to extend `PATH` (asdf/mise/nvm) |
@@ -111,7 +113,7 @@ There is deliberately no in-repo opt-out marker. A repository must not be able t
 
 ## Per-repo language hooks
 
-Keep language/toolchain quality policy in repo-owned hook config or CI. Use [`docs/PER_REPO_HOOKS.md`](docs/PER_REPO_HOOKS.md) for copy-paste examples that compose git-guardrails first, then run Python and TS/JS commands from the correct workspace root.
+Keep language/toolchain quality policy in repo-owned hook config or CI. The baseline's `python-bugs` check is not that: it is a fixed set of always-wrong-anywhere rules. Anything whose verdict depends on repo config -- `ruff check` with the project rule set, formatters, type checkers, `vulture`, `radon`, `import-linter` -- belongs to the repo. Use [`docs/PER_REPO_HOOKS.md`](docs/PER_REPO_HOOKS.md) for copy-paste examples that compose git-guardrails first, then run Python and TS/JS commands from the correct workspace root.
 
 ## Comparison
 

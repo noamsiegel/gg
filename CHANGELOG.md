@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+- `python-bugs` pre-commit check: a fixed, non-configurable set of Ruff rules (`F821`, `F822`, `F823`, `F811`, `E902`) run with `--isolated` over staged blobs. Flags Python that is broken in any repository without reading or enforcing that repository's lint config. Skips cleanly when `uvx` is absent; bypass with `SKIP_PYTHON_BUGS=1`, pin with `RUFF_VERSION`.
+
+### Changed
+- ADR-008 restated as the general admission test for the baseline: a check ships only if its verdict is correct in every repository without reading that repository's configuration. The v0.9.1 `ruff`/`ty`/`biome` removals were an instance of this rule, not the rule itself. `vulture`, `radon`, and `import-linter` are documented as permanently out under the same test.
+- ADR-009 added: config-free bug gates may be language-specific, which is what justifies `fallow` and `python-bugs` remaining in a baseline that excludes language lint.
+
 ## [v0.9.2]
 
 ### Changed

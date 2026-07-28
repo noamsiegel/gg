@@ -20,7 +20,7 @@ jobs:
         # fixtures shell out to. commitlint is installed into this checkout so
         # commitlint.config.cjs can resolve @commitlint/config-conventional.
         run: |
-          brew install lefthook gitleaks actionlint
+          brew install lefthook gitleaks actionlint uv
           bun add --dev @commitlint/cli @commitlint/config-conventional
           echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
 
@@ -30,6 +30,7 @@ jobs:
           gitleaks version
           actionlint -version
           commitlint --version
+          uvx ruff@0.14.2 --version
 
       - name: Lint shell scripts
         run: |

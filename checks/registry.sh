@@ -10,6 +10,7 @@ GIT_GUARDRAILS_CHECKS=(
   "pre-commit|large-files|SKIP_LARGE_FILES|git bash|Refuse staging blobs over MAX_BLOB_SIZE"
   "pre-commit|gitleaks|SKIP_GITLEAKS|gitleaks|Detect secrets in staged changes"
   "pre-commit|actionlint|SKIP_ACTIONLINT|actionlint|Validate .github/workflows YAML"
+  "pre-commit|python-bugs|SKIP_PYTHON_BUGS|uvx git|Config-free Python bug rules (F821/F822/F823/F811/E902) on staged blobs"
   "commit-msg|commitlint|SKIP_COMMITLINT|commitlint|Conventional Commits format"
   "pre-push|fallow|SKIP_FALLOW|fallow bun|Universal code-health gate for JS/TS"
 )
@@ -18,4 +19,4 @@ GIT_GUARDRAILS_CHECKS=(
 GIT_GUARDRAILS_REQUIRED_TOOLS=(git bash)
 
 # Tools that are OPTIONAL (skip the corresponding check if missing).
-GIT_GUARDRAILS_OPTIONAL_TOOLS=(lefthook gitleaks actionlint commitlint fallow bun)
+GIT_GUARDRAILS_OPTIONAL_TOOLS=(lefthook gitleaks actionlint commitlint fallow bun uvx)

@@ -198,6 +198,69 @@ describe('R7 — large-files inspects STAGED blob, not worktree', () => {
   });
 });
 
+describe('ADR-008/009 — python-bugs is a config-free bug gate, not a lint gate', () => {
+  let repo: string;
+  beforeEach(() => { repo = newRepo(); });
+  afterEach(() => cleanup(repo));
+
+  // NameError at runtime: F821. Wrong in every repo, under every style policy.
+  const BUGGY_PY = 'def handler(event):\n    return undefined_thing(event)\n';
+
+  test('hostile pyproject.toml ignoring F821 cannot silence the gate', () => {
+    // Without --isolated ruff honors this file and exits 0, so this test is
+    // the direct observation of invariant 1 for the python-bugs check.
+    writeFileSync(join(repo, 'pyproject.toml'), '[tool.ruff.lint]\nselect = []\nignore = ["F821", "F"]\n');
+    writeFileSync(join(repo, 'app.py'), BUGGY_PY);
+    git(repo, 'add', 'app.py', 'pyproject.toml');
+    const r = git(repo, 'commit', '-m', 'feat: add handler', { env: envForRepo(repo) });
+    expect(r.status, output(r)).not.toBe(0);
+    expect(commitCount(repo)).toBe(0);
+  });
+
+  // Asserted at the script seam, not through `git commit`: lefthook stashes
+  // unstaged changes before pre-commit, so the full commit path cannot
+  // distinguish index bytes from worktree bytes. The check must not depend on
+  // lefthook's stash for invariant 8, so observe the script's own exit code.
+  test('checks the STAGED blob, not the repaired worktree', () => {
+    const check = join(REPO_ROOT, 'checks', 'python-bugs.sh');
+    const env = testEnv(mkdtempSync(join(tmpdir(), 'git-guardrails-xdg-')));
+
+    writeFileSync(join(repo, 'app.py'), BUGGY_PY);
+    git(repo, 'add', 'app.py');
+    writeFileSync(join(repo, 'app.py'), 'def handler(event):\n    return event\n');
+    const stagedBuggy = run(check, ['--', 'app.py'], { cwd: repo, env });
+    expect(stagedBuggy.status, output(stagedBuggy)).toBe(1);
+    // Findings must be attributed to the real path; ruff reading stdin reports
+    // `-` unless --stdin-filename is passed, which makes the hook unactionable.
+    expect(output(stagedBuggy)).toContain('app.py');
+
+    // Inverse: a clean index with a broken worktree must not block.
+    git(repo, 'add', 'app.py');
+    writeFileSync(join(repo, 'app.py'), BUGGY_PY);
+    const stagedClean = run(check, ['--', 'app.py'], { cwd: repo, env });
+    expect(stagedClean.status, output(stagedClean)).toBe(0);
+  });
+
+  test('style and repo-policy violations do not block', () => {
+    // Unused import (F401), no formatting, long line, single-char names. Every
+    // one of these is a repo policy question, so the baseline must stay silent.
+    writeFileSync(
+      join(repo, 'messy.py'),
+      `import os\nimport sys\nx=1\ndef  f( a ):\n  return a+x  # ${'y'.repeat(160)}\n`,
+    );
+    git(repo, 'add', 'messy.py');
+    const r = git(repo, 'commit', '-m', 'feat: messy but working', { env: envForRepo(repo) });
+    expect(r.status, output(r)).toBe(0);
+  });
+
+  test('SKIP_PYTHON_BUGS=1 bypasses only this check', () => {
+    writeFileSync(join(repo, 'app.py'), BUGGY_PY);
+    git(repo, 'add', 'app.py');
+    const r = git(repo, 'commit', '-m', 'feat: add handler', { env: envForRepo(repo, { SKIP_PYTHON_BUGS: '1' }) });
+    expect(r.status, output(r)).toBe(0);
+  });
+});
+
 describe('Bypass envvar surface', () => {
   let repo: string;
   beforeEach(() => { repo = newRepo(); });
@@ -604,13 +667,16 @@ describe('universal checks registry', () => {
     }
   });
 
-  test('registry does not ship repo-owned language tools by default', () => {
+  test('registry does not ship repo-owned language gates by default', () => {
     const commands = new Set(registryEntries().map((entry) => entry.command));
     const optionalTools = new Set(registryTools('GIT_GUARDRAILS_OPTIONAL_TOOLS'));
 
-    for (const repoOwnedTool of ['ruff', 'ty', 'biome']) {
-      expect(commands.has(repoOwnedTool), repoOwnedTool).toBe(false);
-      expect(optionalTools.has(repoOwnedTool), repoOwnedTool).toBe(false);
+    // ADR-008: the criterion is the verdict, not the engine. python-bugs may
+    // shell out to ruff via uvx because it runs --isolated over a fixed rule
+    // set; a `ruff` check that reads the repo's rule set is what stays out.
+    for (const repoOwnedGate of ['ruff', 'ty', 'biome', 'vulture', 'radon', 'import-linter']) {
+      expect(commands.has(repoOwnedGate), repoOwnedGate).toBe(false);
+      expect(optionalTools.has(repoOwnedGate), repoOwnedGate).toBe(false);
     }
   });
 });
@@ -738,7 +804,7 @@ echo unreachable`], {
   test('bypass-help emits a single pastable shell line', () => {
     const r = compose('pre-commit', 'bypass-help');
     expect(r.status).toBe(0);
-    expect(r.stdout.trim()).toBe('SKIP_LARGE_FILES=1 SKIP_GITLEAKS=1 SKIP_ACTIONLINT=1 git-guardrails run pre-commit "$@" || true');
+    expect(r.stdout.trim()).toBe('SKIP_LARGE_FILES=1 SKIP_GITLEAKS=1 SKIP_ACTIONLINT=1 SKIP_PYTHON_BUGS=1 git-guardrails run pre-commit "$@" || true');
     expect(r.stdout.trim()).not.toContain('\n');
     expect(run('bash', ['-n'], { input: r.stdout }).status).toBe(0);
   });
