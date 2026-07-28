@@ -23,7 +23,11 @@ fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-mapfile -t files <<<"$GG_FILES"
+# bash 3.2 (macOS default) has no mapfile.
+files=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && files+=("$line")
+done <<<"$GG_FILES"
 cd "$GG_ROOT"
 
 index=0

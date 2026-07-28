@@ -16,15 +16,19 @@ if ! command -v uvx >/dev/null 2>&1; then
 fi
 
 cd "$GG_ROOT"
-mapfile -d '' -t python_files < <(
-  git ls-files -z --cached --others --exclude-standard -- '*.py' |
-    while IFS= read -r -d '' path; do
-      case "/$path/" in
-        */.venv/*|*/node_modules/*|*/build/*|*/dist/*|*/.git/*) ;;
-        *) printf '%s\0' "$path" ;;
-      esac
-    done
-)
+# Written for bash 3.2, which is what macOS ships and always will. Two rules:
+# `mapfile` does not exist there, and an empty case arm is unsafe - 3.2 parses
+# `pattern) ;;` fine at top level but rejects it inside a pipeline within a
+# process substitution, which is how this loop was originally written. The
+# explicit `:` costs nothing and removes the positional dependency.
+python_files=()
+while IFS= read -r path; do
+  [[ -n "$path" ]] || continue
+  case "/$path/" in
+    */.venv/*|*/node_modules/*|*/build/*|*/dist/*|*/.git/*) : ;;
+    *) python_files+=("$path") ;;
+  esac
+done < <(git ls-files --cached --others --exclude-standard -- '*.py')
 
 if (( ${#python_files[@]} == 0 )); then
   printf '%s\n' 'no Python files outside excluded directories'

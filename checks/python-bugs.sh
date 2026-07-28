@@ -25,7 +25,11 @@ if ! command -v uvx >/dev/null 2>&1; then
   exit 2
 fi
 
-mapfile -t files <<<"$GG_FILES"
+# bash 3.2 (macOS default) has no mapfile.
+files=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && files+=("$line")
+done <<<"$GG_FILES"
 output=$(mktemp)
 trap 'rm -f "$output"' EXIT
 

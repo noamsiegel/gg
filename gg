@@ -179,8 +179,13 @@ run_checks() {
     name=${check##*/}
     name=${name%.sh}
     set +e
+    # "$BASH" runs each check under the SAME interpreter running gg, rather than
+    # whichever bash PATH happens to resolve. On macOS those differ constantly -
+    # /bin/bash is 3.2 and a Homebrew bash 5 usually shadows it - and the split
+    # hid bash-4-only builtins in the checks from every test that ran gg itself
+    # under 3.2.
     output=$(GG_ROOT="$GG_ROOT" GG_BASE="$GG_BASE" GG_RANGE="${GG_RANGE:-}" \
-      GG_FILES="$files" GG_MODE="$GG_MODE" bash "$check" 2>/dev/null)
+      GG_FILES="$files" GG_MODE="$GG_MODE" "${BASH:-bash}" "$check" 2>/dev/null)
     status=$?
     set -e
 

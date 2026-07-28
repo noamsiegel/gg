@@ -19,10 +19,15 @@ jobs:
         run: brew install gitleaks uv
 
       - name: Lint shell scripts
+        # /bin/bash is deliberate, not incidental: macOS ships bash 3.2 and
+        # always will, so that is the oldest interpreter a user can land on.
+        # Linting with a Homebrew bash 5 on PATH hides mapfile and empty-case-arm
+        # errors that break every check on a stock machine.
         run: |
-          bash -n gg
-          bash -n install.sh
-          for f in checks/*.sh; do bash -n "$f"; done
+          /bin/bash --version | head -1
+          /bin/bash -n gg
+          /bin/bash -n install.sh
+          for f in checks/*.sh; do /bin/bash -n "$f"; done
 
       - name: Run test suite
         run: bun test tests/gg.test.ts

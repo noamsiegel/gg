@@ -398,3 +398,48 @@ describe('metadata visible through supported behavior', () => {
     expect(version.stdout).toMatch(/^gg \d+\.\d+\.\d+\n$/);
   });
 });
+
+describe('interpreter portability', () => {
+  // Regression: CI caught what local testing could not. Every script parsed
+  // under Homebrew bash 5 while `mapfile` and an empty `case` arm made three
+  // checks unparseable under the bash 3.2 that macOS ships and always will.
+  // A stock Mac is the oldest interpreter a user can land on, so it is the one
+  // the suite must assert against.
+  const SYSTEM_BASH = '/bin/bash';
+
+  test.skipIf(!existsSync(SYSTEM_BASH))('every shipped script parses under the system bash', () => {
+    const scripts = [
+      join(ROOT, 'gg'),
+      join(ROOT, 'install.sh'),
+      ...readdirSync(CHECKS).filter((f) => f.endsWith('.sh')).map((f) => join(CHECKS, f)),
+    ];
+
+    for (const script of scripts) {
+      const result = run(SYSTEM_BASH, ['-n', script]);
+      expect(result.status, `${script}: ${combined(result)}`).toBe(0);
+    }
+  });
+
+  // Parsing is not enough. `mapfile` is a bash 4 BUILTIN, so a script using it
+  // parses cleanly under 3.2 and fails only when the line executes. This test
+  // therefore drives real findings out of the Python checks under /bin/bash;
+  // asserting on the finding text is what forces the mapfile lines to run.
+  test.skipIf(!existsSync(SYSTEM_BASH) || !commandExists('uvx'))('Python checks produce findings under the system bash', () => {
+    const repo = newRepo();
+    write(repo, 'app.py', 'def handler(event):\n    return event\n');
+    write(repo, 'util.py', 'def helper(x):\n    return x\n');
+    commit(repo, 'base');
+    write(repo, 'app.py', 'def handler(event):\n    return undefined_thing(event)\n');
+    write(repo, 'util.py', 'def helper(x):\n    return x\n\ndef genuinely_unused(y):\n    return y\n');
+    commit(repo, 'work');
+
+    const result = run(SYSTEM_BASH, [GG], { cwd: repo, env: testEnv() });
+
+    expect(result.status, combined(result)).toBe(0);
+    // python-bugs and dead-code both read GG_FILES through what used to be
+    // mapfile; a bash-4-only builtin here surfaces as a check error, not a find.
+    expect(result.stdout, combined(result)).toContain('F821');
+    expect(result.stdout, combined(result)).toContain('genuinely_unused');
+    expect(combined(result)).not.toContain('mapfile');
+  });
+});
