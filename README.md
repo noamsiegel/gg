@@ -14,7 +14,7 @@ User-owned safety checks:
 | `pre-commit` | `large-files` | `SKIP_LARGE_FILES` | Refuse staged blobs over `MAX_BLOB_SIZE` |
 | `pre-commit` | `gitleaks` | `SKIP_GITLEAKS` | Detect secrets in staged changes |
 | `pre-commit` | `actionlint` | `SKIP_ACTIONLINT` | Validate `.github/workflows` YAML |
-| `pre-commit` | `python-bugs` | `SKIP_PYTHON_BUGS` | Flag staged Python that is broken in any repo (`F821`/`F822`/`F823`/`F811`/`E902`) |
+| `pre-commit` | `python-bugs` | `SKIP_PYTHON_BUGS` | Flag staged Python that is broken in any repo (`F821`/`F822`/`E902`) |
 | `commit-msg` | `commitlint` | `SKIP_COMMITLINT` | Enforce Conventional Commits format |
 | `pre-push` | `fallow` | `SKIP_FALLOW` | Run universal code-health gate for JS/TS |
 

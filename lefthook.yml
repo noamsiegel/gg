@@ -62,10 +62,10 @@ pre-commit:
       skip:
         - run: test -n "${SKIP_PYTHON_BUGS:-}"
       fail_text: |
-        Staged Python contains runtime bugs (undefined names, unreachable
-        redefinitions, or unparseable source). This gate runs a fixed rule set
-        with --isolated, so repo lint config cannot silence it and repo style
-        rules are not applied.
+        Staged Python contains runtime bugs (undefined names, undefined
+        __all__ entries, or unparseable source). This gate runs a fixed rule
+        set with --isolated, so repo lint config cannot silence it and repo
+        style rules are not applied.
         Bypass: SKIP_PYTHON_BUGS=1.
     large-files:
       run: "${GIT_GUARDRAILS_TEMPLATES:-$HOME/.config/git-guardrails/templates}/checks/large-files.sh -- {staged_files}"

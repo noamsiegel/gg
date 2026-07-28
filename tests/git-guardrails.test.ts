@@ -206,10 +206,24 @@ describe('ADR-008/009 — python-bugs is a config-free bug gate, not a lint gate
   // NameError at runtime: F821. Wrong in every repo, under every style policy.
   const BUGGY_PY = 'def handler(event):\n    return undefined_thing(event)\n';
 
-  test('hostile pyproject.toml ignoring F821 cannot silence the gate', () => {
-    // Without --isolated ruff honors this file and exits 0, so this test is
-    // the direct observation of invariant 1 for the python-bugs check.
-    writeFileSync(join(repo, 'pyproject.toml'), '[tool.ruff.lint]\nselect = []\nignore = ["F821", "F"]\n');
+  test('hostile pyproject.toml cannot silence the gate', () => {
+    // Every documented way a repo can suppress a rule, in one file. The
+    // per-file-ignores entry is the load-bearing one: `--config` alone still
+    // honors it, so only `--isolated` defeats this fixture.
+    writeFileSync(
+      join(repo, 'pyproject.toml'),
+      [
+        '[tool.ruff]',
+        'builtins = ["undefined_thing"]',
+        'extend-exclude = ["*.py"]',
+        '[tool.ruff.lint]',
+        'select = []',
+        'ignore = ["F821", "F"]',
+        '[tool.ruff.lint.per-file-ignores]',
+        '"*.py" = ["F821", "F822", "E902"]',
+        '',
+      ].join('\n'),
+    );
     writeFileSync(join(repo, 'app.py'), BUGGY_PY);
     git(repo, 'add', 'app.py', 'pyproject.toml');
     const r = git(repo, 'commit', '-m', 'feat: add handler', { env: envForRepo(repo) });
@@ -250,6 +264,49 @@ describe('ADR-008/009 — python-bugs is a config-free bug gate, not a lint gate
     );
     git(repo, 'add', 'messy.py');
     const r = git(repo, 'commit', '-m', 'feat: messy but working', { env: envForRepo(repo) });
+    expect(r.status, output(r)).toBe(0);
+  });
+
+  test('valid code that only a host runtime resolves is not a finding', () => {
+    // Every case here is working Python that ruff -isolated flags by default.
+    // A baseline check that blocks these teaches --no-verify, which is not
+    // per-check and takes gitleaks down with it.
+    const valid: Record<string, string> = {
+      // Sphinx injects `tags` into conf.py.
+      'docs/conf.py': "project = 'x'\nif tags.has('draft'):\n    pass\n",
+      // IPython injects get_ipython/display.
+      'startup.py': "get_ipython().run_line_magic('load_ext', 'autoreload')\n",
+      // Decorator-registered handlers legitimately share a name: the route is
+      // already registered, so the redefinition is not a runtime bug (F811).
+      'routes.py': "from flask import Flask\napp = Flask(__name__)\n\n\n@app.route('/a')\ndef h():\n    return 'a'\n\n\n@app.route('/b')\ndef h():\n    return 'b'\n",
+    };
+    mkdirSync(join(repo, 'docs'), { recursive: true });
+    for (const [path, src] of Object.entries(valid)) {
+      writeFileSync(join(repo, path), src);
+    }
+    git(repo, 'add', ...Object.keys(valid));
+    const r = git(repo, 'commit', '-m', 'feat: host-resolved globals', { env: envForRepo(repo) });
+    expect(r.status, output(r)).toBe(0);
+  });
+
+  test('a gitlink whose path ends in .py is skipped, not reported as a bug', () => {
+    // mode 160000 is a commit object; `git cat-file blob` fails on it, and
+    // under `set -o pipefail` that failure would surface as a finding.
+    // A gitlink needs a real object id, which needs a commit; without one
+    // `update-index --cacheinfo` is rejected and this test would pass
+    // vacuously, so assert the index really holds mode 160000 first.
+    writeFileSync(join(repo, 'seed.txt'), 'seed\n');
+    git(repo, 'add', 'seed.txt');
+    git(repo, 'commit', '--no-verify', '-m', 'chore: seed');
+    const sha = git(repo, 'rev-parse', 'HEAD').stdout.trim();
+    const staged = git(repo, 'update-index', '--add', '--cacheinfo', `160000,${sha},vendor.py`);
+    expect(staged.status, output(staged)).toBe(0);
+    expect(git(repo, 'ls-files', '--stage', '--', 'vendor.py').stdout).toContain('160000');
+
+    const r = run(join(REPO_ROOT, 'checks', 'python-bugs.sh'), ['--', 'vendor.py'], {
+      cwd: repo,
+      env: testEnv(mkdtempSync(join(tmpdir(), 'git-guardrails-xdg-'))),
+    });
     expect(r.status, output(r)).toBe(0);
   });
 

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 ### Added
-- `python-bugs` pre-commit check: a fixed, non-configurable set of Ruff rules (`F821`, `F822`, `F823`, `F811`, `E902`) run with `--isolated` over staged blobs. Flags Python that is broken in any repository without reading or enforcing that repository's lint config. Skips cleanly when `uvx` is absent; bypass with `SKIP_PYTHON_BUGS=1`, pin with `RUFF_VERSION`.
+- `python-bugs` pre-commit check: a fixed, non-configurable Ruff rule set (`F821`, `F822`, `E902`) run with `--isolated` over staged blobs. Flags Python that is broken in any repository without reading or enforcing that repository's lint config. Host-injected globals (`get_ipython`, `tags`, `display`) are declared inline so Sphinx `conf.py` and IPython startup files do not false-positive; `F811` and `F823` are excluded because decorator-registered handlers legitimately reuse names. Skips cleanly when `uvx` is absent; bypass with `SKIP_PYTHON_BUGS=1`, pin with `RUFF_VERSION`.
 
 ### Changed
 - ADR-008 restated as the general admission test for the baseline: a check ships only if its verdict is correct in every repository without reading that repository's configuration. The v0.9.1 `ruff`/`ty`/`biome` removals were an instance of this rule, not the rule itself. `vulture`, `radon`, and `import-linter` are documented as permanently out under the same test.

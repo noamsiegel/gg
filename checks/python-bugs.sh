@@ -5,21 +5,33 @@
 # code which is broken in ANY repository, regardless of that repository's
 # style policy:
 #
-#   F821  undefined name              (NameError at runtime)
-#   F822  undefined name in __all__   (ImportError for `from mod import *`)
-#   F823  local referenced before assignment (UnboundLocalError)
-#   F811  redefinition of unused name (the first definition is dead)
-#   E902  file could not be read/parsed
+#   F821  undefined name            (NameError / UnboundLocalError at runtime)
+#   F822  undefined name in __all__ (ImportError for `from mod import *`)
+#   E902  file could not be read or parsed
 #
-# Two invariants make it a user-owned safety check rather than repo policy
-# (see CONTEXT.md ADR-008):
+# Rules deliberately NOT included, because they are wrong somewhere:
+#
+#   F811  redefinition of unused name — fires on decorator-registered handlers
+#         (two `@app.route` functions sharing a name, two `@pytest.fixture`
+#         definitions). The decorator already registered the first object, so
+#         the program works. Measured: both report F811 under --isolated.
+#   F823  local referenced before assignment — Ruff reports that shape as F821,
+#         so selecting it adds a code that never fires on its own.
+#
+# Three properties make this a user-owned safety check rather than repo policy
+# (see CONTEXT.md ADR-008/ADR-009):
 #
 # 1. `--isolated` — Ruff ignores the repo's pyproject.toml/ruff.toml. Without
 #    it a repo can set `[tool.ruff.lint] ignore = ["F821"]` and silence a
 #    user-owned check from committed config. Verified: with repo config
 #    honored, an F821 file exits 0; with --isolated it exits 1.
 #
-# 2. Staged blobs, not the worktree. Ruff reads paths from disk, which would
+# 2. Host-injected globals are declared here, not discovered from the repo.
+#    Sphinx injects `tags` into conf.py and IPython injects `get_ipython` and
+#    `display`; F821 reports all of them. A fixed builtins list keeps the
+#    verdict repo-independent without excluding whole files.
+#
+# 3. Staged blobs, not the worktree. Ruff reads paths from disk, which would
 #    inspect post-stage worktree edits. We pipe `git cat-file blob :path`
 #    through `--stdin-filename` so the bytes checked are the bytes committed.
 #    Same invariant as checks/large-files.sh.
@@ -34,7 +46,11 @@ RUFF_VERSION="${RUFF_VERSION:-0.14.2}"
 
 # The rule set is deliberately fixed. Widening it here turns a bug gate into a
 # style gate imposed on every repo you touch, which is what ADR-008 forbids.
-RULES="F821,F822,F823,F811,E902"
+RULES="F821,F822,E902"
+
+# Names injected by a host runtime rather than defined in the file. Ruff's
+# top-level `builtins` key is passed inline so --isolated still holds.
+BUILTINS='builtins = ["get_ipython","display","tags","__IPYTHON__","reveal_type"]'
 
 # Strip lefthook's `--` separator if present.
 [[ $# -gt 0 && "$1" == "--" ]] && shift
@@ -54,12 +70,15 @@ for f in "$@"; do
   # deletions and unstaged paths.
   git ls-files --error-unmatch --cached -- "$f" >/dev/null 2>&1 || continue
 
-  # mode 120000 = symlink; the staged blob is link text, not Python source.
+  # Only regular files hold Python source. 120000 is a symlink (blob is link
+  # text) and 160000 is a gitlink, whose "blob" is a commit object that
+  # `git cat-file blob` refuses — under pipefail that would read as a finding.
   mode=$(git ls-files --stage -- "$f" | awk '{print $1}')
-  [[ "$mode" == "120000" ]] && continue
+  [[ "$mode" == "100644" || "$mode" == "100755" ]] || continue
 
   if ! git cat-file blob ":$f" 2>/dev/null | uvx "ruff@${RUFF_VERSION}" check \
       --isolated \
+      --config "$BUILTINS" \
       --select "$RULES" \
       --no-cache \
       --quiet \
