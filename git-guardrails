@@ -31,8 +31,11 @@ GIT_GUARDRAILS_SELF_DIR=$(_resolve_self_dir)
 # Local dev:        same dir as the binary
 GIT_GUARDRAILS_TEMPLATES="${GIT_GUARDRAILS_TEMPLATES:-$GIT_GUARDRAILS_SELF_DIR}"
 if [[ ! -f "$GIT_GUARDRAILS_TEMPLATES/lefthook.yml" ]]; then
-  # brew share layout
-  for candidate in "/opt/homebrew/share/git-guardrails" "/usr/local/share/git-guardrails" "$GIT_GUARDRAILS_SELF_DIR/../share/git-guardrails"; do
+  # The install adjacent to the running binary owns it, so the sibling share
+  # dir is tried before any fixed system prefix. Reversing these lets a binary
+  # run from one prefix silently execute another prefix's (possibly older)
+  # lefthook.yml and checks/, which reads as "the check did not fire".
+  for candidate in "$GIT_GUARDRAILS_SELF_DIR/../share/git-guardrails" "/opt/homebrew/share/git-guardrails" "/usr/local/share/git-guardrails"; do
     if [[ -f "$candidate/lefthook.yml" ]]; then
       GIT_GUARDRAILS_TEMPLATES="$candidate"
       break

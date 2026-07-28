@@ -10,9 +10,9 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -675,6 +675,41 @@ describe('universal checks registry', () => {
     const r = run('bash', ['-c', 'source checks/registry.sh; declare -p GIT_GUARDRAILS_CHECKS'], { cwd: REPO_ROOT });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('GIT_GUARDRAILS_CHECKS');
+  });
+
+  test('templates resolve to the running binary prefix, not a fixed system prefix', () => {
+    // Regression: /opt/homebrew/share/git-guardrails was tried before the
+    // binary's own sibling share dir, so a binary run from any other prefix
+    // executed the Homebrew copy's lefthook.yml and checks/. A check present
+    // only in the running prefix never ran and the commit succeeded as if it
+    // had passed. GIT_GUARDRAILS_TEMPLATES must be unset here: it short
+    // circuits the candidate loop this test exists to observe.
+    const prefix = mkdtempSync(join(tmpdir(), 'git-guardrails-prefix-'));
+    try {
+      const share = join(prefix, 'share', 'git-guardrails');
+      mkdirSync(join(prefix, 'bin'), { recursive: true });
+      mkdirSync(share, { recursive: true });
+      cpSync(GIT_GUARDRAILS, join(prefix, 'bin', 'git-guardrails'));
+      for (const asset of ['lefthook.yml', 'gitleaks.toml', 'commitlint.config.cjs', 'checks']) {
+        cpSync(join(REPO_ROOT, asset), join(share, asset), { recursive: true });
+      }
+
+      const repo = newBareRepo();
+      try {
+        const env = envForRepo(repo);
+        delete env.GIT_GUARDRAILS_TEMPLATES;
+        const r = run(join(prefix, 'bin', 'git-guardrails'), ['doctor'], { cwd: repo, env });
+        expect(r.status, output(r)).toBe(0);
+        // Reported unnormalized (`<prefix>/bin/../share/...`) and via the
+        // macOS /private tmpdir symlink, so match the prefix, not the path.
+        expect(r.stdout).toContain(basename(prefix));
+        expect(r.stdout).not.toContain('/opt/homebrew/share/git-guardrails');
+      } finally {
+        cleanup(repo);
+      }
+    } finally {
+      cleanup(prefix);
+    }
   });
 
   test('every registry entry has five non-empty fields', () => {

@@ -11,6 +11,9 @@ All notable changes to this project will be documented in this file.
 - ADR-008 restated as the general admission test for the baseline: a check ships only if its verdict is correct in every repository without reading that repository's configuration. The v0.9.1 `ruff`/`ty`/`biome` removals were an instance of this rule, not the rule itself. `vulture`, `radon`, and `import-linter` are documented as permanently out under the same test.
 - ADR-009 added: config-free bug gates may be language-specific, which is what justifies `fallow` and `python-bugs` remaining in a baseline that excludes language lint.
 
+### Fixed
+- Template resolution now prefers the running binary's sibling `share/git-guardrails` over the hardcoded `/opt/homebrew` and `/usr/local` prefixes. A binary run from any other prefix previously executed the Homebrew copy's `lefthook.yml` and `checks/`, so a check that existed only in the running prefix silently never ran and the commit succeeded as if it had passed.
+
 ## [v0.9.2]
 
 ### Changed
