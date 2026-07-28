@@ -1,10 +1,10 @@
-# Contributing to git-guardrails
+# Contributing to gg
 
-Thanks for improving `git-guardrails`. This repo is a user-owned security and quality layer; keep changes portable, explicit, and hostile-repo-aware.
+Thanks for improving `gg`. This repository provides a portable, advisory code reviewer. Keep changes explicit, hostile-repository-aware, and free of repository-specific policy.
 
 ## How to report a bug
 
-Open a [bug report](./.github/ISSUE_TEMPLATE/bug.md) with reproduction steps, expected behavior, actual behavior, and your environment.
+Open a [bug report](./.github/ISSUE_TEMPLATE/bug.md) with reproduction steps, expected behavior, actual behavior, and environment details.
 
 ## How to propose a feature
 
@@ -12,36 +12,62 @@ Open a [feature request](./.github/ISSUE_TEMPLATE/feature.md) with the problem, 
 
 ## Development setup
 
-`git-guardrails` is a portable lefthook config plus bash helpers for cross-repo personal hooks.
-
-Dependencies:
+Clone the repository, enter the checkout, and run `gg` directly:
 
 ```bash
-brew install bash yq actionlint gitleaks lefthook
-bun install -g @commitlint/cli
-bun install
+git clone https://github.com/noamsiegel/gg.git
+cd gg
+./gg
 ```
 
-Use the local checkout as a hook fixture when possible; avoid weakening user-level checks based on repo-local configuration.
+The checks use tools already present on `PATH`. Depending on the files under review, they may use `uvx`, `npx`, or `gitleaks`. A missing runner skips its check instead of failing the review.
 
 ## Running tests
 
+Run the CLI test suite:
+
 ```bash
-bun test tests/git-guardrails.test.ts
+bun test tests/gg.test.ts
 ```
+
+For shell changes, also check syntax:
+
+```bash
+bash -n gg
+bash -n install.sh
+for f in checks/*.sh; do bash -n "$f"; done
+```
+
+## Adding a check
+
+Add an executable `checks/<name>.sh` file with a `# gg-globs:` header declaring the files it accepts:
+
+```bash
+#!/usr/bin/env bash
+# gg-globs: *.py *.pyi
+```
+
+The core filters changed files before invoking the check. Checks must follow this protocol:
+
+- Exit `0` when the check ran, whether or not it found issues.
+- Exit `2` when the required runner is unavailable, and print one short reason.
+- Use any other exit code for an execution error.
+- Print findings one per line as `path:line: message`, or `path: message` when no line is available.
+- Do not print headings, summaries, banners, or blank lines. The core owns presentation.
+- Never author per-repository configuration. A check may honor configuration the repository already owns.
 
 ## Commit message format
 
-Conventional Commits are recommended but not strictly required:
+Conventional Commits are recommended but not required:
 
 ```text
-fix: defend gitleaks config from repo allowlists
-feat: add doctor check for hook overrides
+fix: preserve filenames containing spaces
+feat: add a config-free Ruby bug check
 ```
 
 ## Pull request checklist
 
-- [ ] Tests pass with `bun test tests/git-guardrails.test.ts`.
-- [ ] Lint/security checks are clean.
-- [ ] Documentation is updated when behavior changes.
-- [ ] `CHANGELOG.md` is updated for user-visible changes.
+- [ ] Tests pass with `bun test tests/gg.test.ts`.
+- [ ] Changed shell scripts pass `bash -n`.
+- [ ] Documentation reflects user-visible changes.
+- [ ] `CHANGELOG.md` records user-visible changes.

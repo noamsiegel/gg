@@ -1,48 +1,85 @@
 #!/usr/bin/env bash
-# Block commits whose STAGED BLOBS exceed LARGE_FILE_LIMIT_MB (default 5).
+# gg-globs: *
 #
-# Critically: we measure the size of the BLOB in the git index, not the
-# worktree file. A user can stage a 100MB file, edit the worktree down to
-# 1KB, then commit — git commits the staged blob, not the worktree. Worktree
-# stat() would lie. `git cat-file -s :path` reports the true staged size.
+# A staged review must measure the blob in Git's index rather than the worktree
+# file. A user can stage a 100 MB file and then edit the worktree copy down to
+# 1 KB; Git still commits the staged 100 MB blob. Range review has the same
+# provenance requirement, so it asks Git for objects introduced by the range.
+# Branch and explicit-path review are the only modes where the worktree is the
+# artifact under review.
 
 set -euo pipefail
 
 LIMIT_MB="${LARGE_FILE_LIMIT_MB:-5}"
 LIMIT_BYTES=$((LIMIT_MB * 1024 * 1024))
+found=0
 
-# Strip lefthook's `--` separator if present.
-[[ $# -gt 0 && "$1" == "--" ]] && shift
+report_large_file() {
+  local path=$1
+  local size=$2
+  local mb
 
-if [[ $# -eq 0 ]]; then
-  exit 0
-fi
-
-fail=0
-for f in "$@"; do
-  # Resolve the staged blob for this path via git ls-files -s. The format is:
-  #   <mode> <sha> <stage>\t<path>
-  # If the path isn't staged (e.g. ignored by lefthook glob mismatches), skip.
-  staged_line=$(git ls-files --stage -z -- "$f" | tr -d '\0' || true)
-  [[ -z "$staged_line" ]] && continue
-
-  # mode 120000 = symlink; skip — the staged blob is the link text, not content.
-  mode=$(printf '%s' "$staged_line" | awk '{print $1}')
-  [[ "$mode" == "120000" ]] && continue
-
-  # Get the blob size in bytes from git itself.
-  size=$(git cat-file -s ":$f" 2>/dev/null || echo 0)
   if (( size > LIMIT_BYTES )); then
-    mb=$(awk -v s="$size" 'BEGIN { printf "%.2f", s / 1048576 }')
-    printf '\033[31m%s\033[0m  %sMB staged  (>%sMB threshold)\n' "$f" "$mb" "$LIMIT_MB" >&2
-    fail=1
+    mb=$(awk -v size="$size" 'BEGIN { printf "%.2f", size / 1048576 }')
+    printf '%s: %sMB staged (>%sMB threshold)\n' "$path" "$mb" "$LIMIT_MB"
+    found=1
   fi
-done
+}
 
-if (( fail == 1 )); then
-  printf '\nIf this file genuinely belongs in the repo:\n' >&2
-  printf '  - Track it via Git LFS, or\n' >&2
-  printf '  - Raise the threshold: LARGE_FILE_LIMIT_MB=20 git commit ...\n' >&2
-  printf '  - Bypass: SKIP_LARGE_FILES=1 git commit ...\n' >&2
-  exit 1
+cd "$GG_ROOT"
+
+case "${GG_MODE:-}" in
+  range)
+    if [[ -z "${GG_RANGE:-}" ]]; then
+      echo "large-files needs GG_RANGE in range mode"
+      exit 1
+    fi
+
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gg-large-files.XXXXXX")
+    trap 'rm -rf "$tmp_dir"' EXIT
+    git -c core.quotePath=false rev-list --objects "$GG_RANGE" >"$tmp_dir/objects"
+    git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' \
+      <"$tmp_dir/objects" >"$tmp_dir/sizes"
+
+    while IFS=' ' read -r type size path; do
+      [[ "$type" == "blob" && -n "$path" ]] || continue
+      report_large_file "$path" "$size"
+    done <"$tmp_dir/sizes"
+    ;;
+
+  staged)
+    while IFS= read -r path; do
+      [[ -n "$path" ]] || continue
+
+      staged_line=$(git ls-files --stage -- "$path" | head -n 1)
+      [[ -n "$staged_line" ]] || continue
+      mode=${staged_line%% *}
+
+      # Only regular index entries represent file content. In particular,
+      # 120000 is a symlink whose blob contains only its target path.
+      [[ "$mode" == "100644" || "$mode" == "100755" ]] || continue
+
+      size=$(git cat-file -s ":$path")
+      report_large_file "$path" "$size"
+    done <<<"${GG_FILES:-}"
+    ;;
+
+  branch|paths)
+    while IFS= read -r path; do
+      [[ -n "$path" ]] || continue
+      [[ -f "$path" && ! -L "$path" ]] || continue
+      size=$(wc -c <"$path")
+      report_large_file "$path" "$size"
+    done <<<"${GG_FILES:-}"
+    ;;
+
+  *)
+    printf 'large-files does not support %s mode\n' "${GG_MODE:-unset}"
+    exit 1
+    ;;
+esac
+
+if (( found == 1 )); then
+  printf 'If a file genuinely belongs in the repository, track it via Git LFS.\n' >&2
+  printf 'Raise the threshold with LARGE_FILE_LIMIT_MB=20 when appropriate.\n' >&2
 fi

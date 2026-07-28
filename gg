@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# gg is an advisory reviewer for work that is about to leave a developer's machine.
+# Checks own analysis only; this file owns file selection, isolation, presentation,
+# and the distinction between an advisory review and the narrow publication gate.
+set -euo pipefail
+IFS=$'\n\t'
+
+GG_VERSION="1.0.0"
+
+_resolve_self_dir() {
+  local self
+  self=$(realpath "$0" 2>/dev/null || printf '%s\n' "$0")
+  dirname "$self"
+}
+
+GG_SELF_DIR=$(_resolve_self_dir)
+GG_CHECKS_DIR="$GG_SELF_DIR/checks"
+GG_INVOKE_DIR=$PWD
+COLOR=false
+if [[ -t 1 ]]; then
+  COLOR=true
+fi
+
+usage() {
+  cat <<'EOF'
+Usage:
+  gg                    Review the current branch against its base
+  gg <path>...          Review tracked files under the given paths
+  gg --staged           Review staged files
+  gg --since <ref>      Review the current branch against <ref>
+  gg guard <hook>       Block secrets and large files at publication time
+  gg self-update        Fast-forward the gg installation
+  gg --version          Print the installed version
+  gg --help             Show this help
+EOF
+}
+
+fail_usage() {
+  printf 'gg: %s\n' "$1" >&2
+  usage >&2
+  exit 1
+}
+
+resolve_base() {
+  local base candidate merge_base
+  if [[ -n "${GG_BASE:-}" ]]; then
+    base=$GG_BASE
+  else
+    base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
+    if [[ -z "$base" ]]; then
+      for candidate in origin/main origin/master origin/develop; do
+        if git rev-parse --verify --quiet "$candidate" >/dev/null; then
+          base=$candidate
+          break
+        fi
+      done
+    fi
+    if [[ -z "$base" ]] && git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+      base=HEAD~1
+    fi
+  fi
+
+  [[ -n "${base:-}" ]] || return 1
+  git rev-parse --verify --quiet "$base" >/dev/null || return 1
+  if ! git merge-base --is-ancestor "$base" HEAD 2>/dev/null; then
+    merge_base=$(git merge-base "$base" HEAD 2>/dev/null || true)
+    [[ -n "$merge_base" ]] || return 1
+    base=$merge_base
+  fi
+  printf '%s\n' "$base"
+}
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || {
+    printf 'gg: not inside a git worktree\n' >&2
+    exit 1
+  }
+}
+
+existing_files() {
+  local file
+  while IFS= read -r file; do
+    [[ -n "$file" && -f "$GG_ROOT/$file" ]] && printf '%s\n' "$file"
+  done | sort -u
+}
+
+collect_files() {
+  case "$GG_MODE" in
+    branch)
+      {
+        git diff --name-only --diff-filter=ACMR "$GG_BASE...HEAD"
+        git diff --name-only --diff-filter=ACMR HEAD
+      } | existing_files
+      ;;
+    staged)
+      git diff --name-only --cached --diff-filter=ACMR | existing_files
+      ;;
+    paths)
+      git -C "$GG_INVOKE_DIR" ls-files --full-name -- "${GG_PATHS[@]}" | existing_files
+      ;;
+    range)
+      git diff --name-only --diff-filter=ACMR "$GG_RANGE" | existing_files
+      ;;
+  esac
+}
+
+check_files() {
+  local check=$1 globs_line file glob base matched
+  globs_line=$(sed -n 's/^# gg-globs:[[:space:]]*//p' "$check" | sed -n '1p')
+  [[ -n "$globs_line" ]] || return 0
+  while IFS= read -r file; do
+    base=${file##*/}
+    matched=false
+    local -a globs=()
+    IFS=' ' read -r -a globs <<< "$globs_line"
+    for glob in "${globs[@]}"; do
+      if [[ "$base" == $glob ]]; then
+        matched=true
+        break
+      fi
+    done
+    $matched && printf '%s\n' "$file"
+  done <<< "$GG_ALL_FILES"
+}
+
+style_heading() {
+  if $COLOR; then
+    printf '\033[1m%s\033[0m\n' "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+render_check() {
+  local name=$1 output=$2 status=$3
+  style_heading "$name"
+  if [[ $status -eq 2 ]]; then
+    printf '  (skipped: %s)\n' "${output:-required tool unavailable}"
+  elif [[ $status -ne 0 ]]; then
+    printf '  (error: %s)\n' "${output:-check exited with status $status}"
+  else
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && printf '  %s\n' "$line"
+    done <<< "$output"
+  fi
+}
+
+run_checks() {
+  local guard=$1 check name files output status line_count
+  local findings=0 ran_checks=0 skipped=0 errors=0 blocked=0
+  local -a checks=()
+
+  if $guard; then
+    for check in "$GG_CHECKS_DIR/secrets.sh" "$GG_CHECKS_DIR/large-files.sh"; do
+      [[ -f "$check" ]] && checks+=("$check")
+    done
+  elif [[ -d "$GG_CHECKS_DIR" ]]; then
+    while IFS= read -r check; do
+      checks+=("$check")
+    done < <(find "$GG_CHECKS_DIR" -maxdepth 1 -type f -name '*.sh' -print | sort)
+  fi
+
+  for check in "${checks[@]}"; do
+    files=$(check_files "$check")
+    [[ -n "$files" ]] || continue
+    name=${check##*/}
+    name=${name%.sh}
+    set +e
+    output=$(GG_ROOT="$GG_ROOT" GG_BASE="$GG_BASE" GG_RANGE="${GG_RANGE:-}" \
+      GG_FILES="$files" GG_MODE="$GG_MODE" bash "$check" 2>/dev/null)
+    status=$?
+    set -e
+
+    if [[ $status -eq 0 ]]; then
+      ran_checks=$((ran_checks + 1))
+      if [[ -z "$output" ]]; then
+        continue
+      fi
+    fi
+
+    printf '\n'
+    render_check "$name" "$output" "$status"
+    if [[ $status -eq 2 ]]; then
+      skipped=$((skipped + 1))
+    elif [[ $status -ne 0 ]]; then
+      errors=$((errors + 1))
+      blocked=1
+    else
+      line_count=$(printf '%s\n' "$output" | sed '/^$/d' | wc -l | tr -d ' ')
+      findings=$((findings + line_count))
+      blocked=1
+    fi
+  done
+
+  printf '\n%s finding%s across %s check%s' \
+    "$findings" "$([[ $findings -eq 1 ]] || printf 's')" \
+    "$ran_checks" "$([[ $ran_checks -eq 1 ]] || printf 's')"
+  [[ $skipped -gt 0 ]] && printf ' · %s skipped' "$skipped"
+  [[ $errors -gt 0 ]] && printf ' · %s error%s' "$errors" "$([[ $errors -eq 1 ]] || printf 's')"
+  printf '\n'
+
+  if $guard && [[ $blocked -ne 0 ]]; then
+    return 1
+  fi
+  return 0
+}
+
+review() {
+  local label count
+  GG_ROOT=$(repo_root)
+  cd "$GG_ROOT"
+  GG_ALL_FILES=$(collect_files)
+  count=0
+  if [[ -n "$GG_ALL_FILES" ]]; then
+    count=$(printf '%s\n' "$GG_ALL_FILES" | wc -l | tr -d ' ')
+  fi
+  case "$GG_MODE" in
+    branch) label="branch vs $GG_BASE" ;;
+    staged) label=staged ;;
+    paths) label=paths ;;
+    range) label="range $GG_RANGE" ;;
+  esac
+  printf 'gg  %s  (%s file%s)\n' "$label" "$count" "$([[ $count -eq 1 ]] || printf 's')"
+  [[ $count -gt 0 ]] && run_checks false || printf '\n0 findings across 0 checks\n'
+  return 0
+}
+
+guard_pre_push() {
+  local local_ref local_sha remote_ref remote_sha base any=0
+  GG_ROOT=$(repo_root)
+  cd "$GG_ROOT"
+  # Git writes pre-push refs space-separated, but this script sets a global
+  # IFS of newline+tab. Without restoring space here, the whole line lands in
+  # local_ref, local_sha is empty, and every ref is silently skipped - the
+  # guard then exits 0 on a repository full of secrets.
+  while IFS=$' \t' read -r local_ref local_sha remote_ref remote_sha; do
+    [[ -n "${local_sha:-}" ]] || continue
+    if [[ "$local_sha" =~ ^0+$ ]]; then
+      continue
+    fi
+    if [[ "$remote_sha" =~ ^0+$ ]]; then
+      base=$(resolve_base) || {
+        printf 'gg: guard skipped %s because no base ref could be resolved\n' "$local_ref"
+        continue
+      }
+      GG_BASE=$base
+      GG_RANGE="$base..$local_sha"
+    else
+      GG_BASE=""
+      GG_RANGE="$remote_sha..$local_sha"
+    fi
+    GG_MODE=range
+    GG_ALL_FILES=$(collect_files)
+    [[ -n "$GG_ALL_FILES" ]] || continue
+    printf 'gg  guard pre-push  (%s)\n' "$local_ref"
+    run_checks true || any=1
+  done
+  return "$any"
+}
+
+self_update() {
+  if ! git -C "$GG_SELF_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'gg: install directory is not a git checkout: %s\n' "$GG_SELF_DIR" >&2
+    exit 1
+  fi
+  if [[ -n "$(git -C "$GG_SELF_DIR" status --porcelain)" ]]; then
+    printf 'gg: refusing to update because install directory has local modifications\n' >&2
+    exit 1
+  fi
+  git -C "$GG_SELF_DIR" pull --ff-only
+}
+
+main() {
+  local base_override=${GG_BASE:-}
+  GG_MODE=branch
+  GG_BASE=$base_override
+  GG_RANGE=""
+  GG_PATHS=()
+
+  case "${1:-}" in
+    --help|-h)
+      [[ $# -eq 1 ]] || fail_usage "--help takes no arguments"
+      usage
+      ;;
+    --version|-V)
+      [[ $# -eq 1 ]] || fail_usage "--version takes no arguments"
+      printf 'gg %s\n' "$GG_VERSION"
+      ;;
+    --staged)
+      [[ $# -eq 1 ]] || fail_usage "--staged takes no arguments"
+      GG_MODE=staged
+      GG_BASE=""
+      review
+      ;;
+    --since)
+      [[ $# -eq 2 ]] || fail_usage "--since requires exactly one ref"
+      GG_BASE=$2
+      git rev-parse --verify --quiet "$GG_BASE" >/dev/null 2>&1 || fail_usage "unknown base ref: $GG_BASE"
+      review
+      ;;
+    guard)
+      [[ $# -eq 2 ]] || fail_usage "guard requires exactly one hook name"
+      [[ $2 == pre-push ]] || fail_usage "unsupported guard hook: $2"
+      guard_pre_push
+      ;;
+    self-update)
+      [[ $# -eq 1 ]] || fail_usage "self-update takes no arguments"
+      self_update
+      ;;
+    "")
+      GG_BASE=$(resolve_base) || {
+        printf 'gg: no base ref could be resolved; nothing to review\n'
+        exit 0
+      }
+      review
+      ;;
+    -* ) fail_usage "unknown option: $1" ;;
+    *)
+      GG_MODE=paths
+      GG_BASE=""
+      GG_PATHS=("$@")
+      review
+      ;;
+  esac
+}
+
+main "$@"

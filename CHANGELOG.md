@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0]
+
+### Changed
+
+- Replaced the blocking, per-repository Git hook layer with `gg`, an advisory reviewer run on demand against the current branch, staged changes, or selected paths.
+- Expanded the review roster to include isolated Python bug checks, whole-repository Vulture analysis filtered to changed files, Radon complexity regressions, existing import-linter contracts, diff-aware Fallow analysis, and Gitleaks.
+- Retained one intentionally blocking path: `gg guard pre-push` runs only secrets and large-file checks from the user's own global hook chain because a push publishes credentials and history.
+- Distribution now uses `curl -fsSL https://raw.githubusercontent.com/noamsiegel/gg/main/install.sh | bash`, installs under `~/.local/share/gg`, links `~/.local/bin/gg`, and updates with `gg self-update`.
+
+### Breaking
+
+- `git-guardrails install`, `uninstall`, `doctor`, and `migrate`, the Homebrew formula, and all per-repository hook management are gone.
+- `gg` does not install into repositories, author per-repository configuration, or change `core.hooksPath`. Normal reviews always exit `0`; only `gg guard pre-push` can block.
+
 ## [v0.10.0]
 
 ### Added

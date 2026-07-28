@@ -15,32 +15,17 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install hook tools
-        # Runtime dependencies the binary expects + tools the bun:test
-        # fixtures shell out to. commitlint is installed into this checkout so
-        # commitlint.config.cjs can resolve @commitlint/config-conventional.
-        run: |
-          brew install lefthook gitleaks actionlint uv
-          bun add --dev @commitlint/cli @commitlint/config-conventional
-          echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
-
-      - name: Verify hook tools are reachable
-        run: |
-          lefthook version
-          gitleaks version
-          actionlint -version
-          commitlint --version
-          uvx ruff@0.14.2 --version
+      - name: Install check runners
+        run: brew install gitleaks uv
 
       - name: Lint shell scripts
         run: |
-          bash -n git-guardrails
-          bash -n checks/registry.sh
+          bash -n gg
+          bash -n install.sh
           for f in checks/*.sh; do bash -n "$f"; done
 
       - name: Run test suite
-        # Tests use bun:test; no package.json required.
-        run: bun test tests/git-guardrails.test.ts
+        run: bun test tests/gg.test.ts
 
       - name: Smoke check
-        run: ./git-guardrails --version
+        run: ./gg --version

@@ -25,10 +25,7 @@ What happened instead?
 ## Environment
 
 - OS:
-- git-guardrails commit or version:
-- bash version:
-- lefthook version:
-- gitleaks version:
-- actionlint version:
-- bun version:
-- Hook wiring mode: standalone `core.hooksPath` or layered with `wt`
+- `gg --version` output:
+- Command run:
+- Repository languages involved:
+- Available runners: `uvx` / `npx` / `gitleaks` (list those present)

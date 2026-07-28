@@ -1,137 +1,144 @@
-# git-guardrails Roadmap
+# gg Roadmap
 
-> Current architecture history and next deepening opportunities. Load-bearing
-> invariants live in `CONTEXT.md`; release history lives in `CHANGELOG.md`.
+> **v1.0.0 replaced the repository hook layer with an advisory, user-invoked reviewer.** Milestones below that predate v1.0.0 are retained as historical context, not as descriptions of the current product.
+>
+> Current architecture and next deepening opportunities follow. Load-bearing invariants live in `CONTEXT.md`; release history lives in `CHANGELOG.md`.
 
-## Current state (v0.9.x)
+## Current state (v1.0.0)
 
-`git-guardrails` is a single-file Bash CLI plus shipped assets:
+`gg` is a single-file Bash CLI with a small set of check adapters:
 
-- `git-guardrails` — CLI, hook install/uninstall/run/doctor flows
-- `checks/registry.sh` — shell-readable shipped safety-check registry
-- `checks/*.sh` — concrete safety checks used by the shipped baseline
-- `lefthook.yml` — internal execution adapter for shipped hook checks
-- `gitleaks.toml`, `commitlint.config.cjs` — shipped tool baselines
-- `tests/git-guardrails.test.ts` — fixture tests over real temp repos
+- `gg` - CLI dispatch, Git scope resolution, check discovery, file filtering, execution, and presentation
+- `checks/*.sh` - self-describing advisory checks and the two guard-compatible security checks
+- `install.sh` - user-level checkout and executable-link installer
+- `tests/gg.test.ts` - CLI, protocol, check, repository, and installer tests
 
-The product boundary is a user-owned safety baseline. Repo-specific lint,
-format, typecheck, and test policy belongs in repo-owned hook config or CI.
+The product boundary is an on-demand personal code review. Repository-owned lint, format, typecheck, test, and configuration policy remain the repository's responsibility. Normal reviews report findings and check errors but exit successfully; only the narrow `gg guard pre-push` publication guard can block.
 
 ## Architecture already delivered
 
-### v0.4.0 — Hook-state classifier
+The v0.x milestones in this section describe the retired hook-layer product. They remain here only to record the decisions that led to v1.0.0.
 
-- Introduced `_classify_hook` and `_classify_repo_hooks` as the source of hook ownership state.
-- Routed install, uninstall, and doctor behavior through stable state words.
-- Added classifier coverage for absent, owned, non-owned, opt-out, and hooksPath-shadowed states.
+### v0.4.0 - Hook-state classifier (historical)
 
-### v0.5.0 — Doctor unification and lifecycle coverage
+- Centralized classification of hook ownership and conflicts.
+- Routed repository setup, removal, and audit behavior through stable state words.
+- Added coverage for absent, owned, conflicting, opted-out, and shadowed states.
 
-- Made `_audit_repo` emit structured records consumed by both current-repo `doctor` and `doctor --all`.
-- Added lifecycle coverage for install, uninstall, force install, skipped hooks, doctor agreement, and global template generation.
+### v0.5.0 - Audit unification and lifecycle coverage (historical)
 
-### v0.6.0 — Compose-shim contract
+- Made one repository audit record serve both single-repository and multi-repository views.
+- Added lifecycle coverage for setup, removal, forced replacement, skipped hooks, audit agreement, and global template generation.
 
-- Centralized embedded, standalone, and bypass-help snippets in `_compose_snippet`.
-- Preserved `"$@"`, stdin, and blocking exit behavior across generated and pasted hooks.
-- Added adapter tests for argument forwarding, pre-push stdin, and non-zero propagation.
+### v0.6.0 - Compose-shim contract (historical)
 
-### v0.7.0 — Universal checks registry
+- Centralized embedded, standalone, and bypass-help snippets.
+- Preserved arguments, standard input, and blocking exit behavior across generated hook shims.
+- Added adapter tests for argument forwarding, pre-push input, and non-zero propagation.
 
-- Added `checks/registry.sh` as the source of shipped check metadata.
-- Built doctor reachability and bypass-help from registry entries.
-- Added parity tests for registry field shape, skip envs, and doctor tool output.
+### v0.7.0 - Universal checks registry (historical)
 
-### v0.9.x — Clean product boundary
+- Added a central source for shipped check metadata.
+- Used registry entries for tool reachability and bypass guidance.
+- Added parity tests for registry shape, skip controls, and tool reporting.
 
-- Completed the `git-guardrails` naming cutover.
-- Removed Python and TS/JS language gates from the shipped default baseline.
-- Documented per-repo language hook patterns in `docs/PER_REPO_HOOKS.md`.
-- Renamed the all-check bypass env to `GIT_GUARDRAILS_SKIP`.
+### v0.9.x - Clean product boundary (historical)
 
-## Current target shape
+- Completed the `git-guardrails` naming cutover for the former product.
+- Removed language-specific quality gates from its blocking baseline.
+- Separated repository-owned language checks from the shipped safety baseline.
+- Established a single skip control for all checks.
+
+### v1.0.0 - Advisory reviewer
+
+- Replaced automatic per-repository hooks with the user-invoked `gg` command.
+- Made checks executable adapters that declare their scope with `# gg-globs:`.
+- Centralized scope resolution, check discovery, filtering, execution, and presentation in `gg`.
+- Added heuristic Python, JavaScript, complexity, architecture, dead-code, secret, and large-file reviews without authoring repository configuration.
+- Retained only a narrow, explicitly invoked pre-push guard for secrets and large files.
+
+## Current target
 
 ### Domain layer
 
 ```text
-_classify_hook <hooks_dir> <hook>       → absent | ours | non-ours | shadowed | opt-out
-_classify_repo_hooks <repo>             → normalized hook-state records
-_audit_repo <repo>                      → one normalized repo audit record
-_compose_snippet <hook> <mode>          → canonical hook shim text
-checks/registry.sh                      → shipped safety-check metadata
+resolve review mode and base -> repository-relative candidate files
+read each check's gg-globs header -> matching changed files
+run check with GG_ROOT, GG_BASE, GG_RANGE, GG_FILES, and GG_MODE
+classify exit 0 as ran, 2 as unavailable, and all others as errors
 ```
 
 ### Adapter layer
 
-- Filesystem hook inspection stays behind `_classify_*`.
-- `git config core.hooksPath` inspection stays behind `_classify_repo_hooks` / `_audit_repo`.
-- External tools (`lefthook`, `gitleaks`, `commitlint`, `fallow`) are invoked only through `cmd_run` and concrete check scripts.
-- Repo-owned language/toolchain hooks are documented examples, not shipped adapters.
+- Each executable `checks/*.sh` owns one tool integration.
+- Each check declares accepted files in a `# gg-globs:` header.
+- Checks emit only finding records or one runner-unavailable reason.
+- Tool-specific execution and output normalization stay inside the corresponding check.
+- Checks may honor repository configuration that already exists but never create it.
 
 ### CLI layer
 
-`cmd_install`, `cmd_uninstall`, `cmd_doctor`, `cmd_doctor_all`, and
-`cmd_global_template` should render or mutate from domain records instead of
-re-inferring hook state or check metadata.
+`gg` owns command dispatch, Git scope and base resolution, check discovery, glob filtering, environment construction, execution, grouped presentation, skipped and error status, and the final summary.
 
 ## Next deepening candidates
 
-### 1. Record codec locality
+### 1. Protocol parsing locality
 
-**Problem**: Unit-separator records are load-bearing, but emit/parse logic is still manual in several call sites.
+**Problem**: Header parsing, glob matching, and exit classification form the check protocol and must remain consistent as checks are added.
 
-**Direction**: Add tiny private helpers for classifier/audit record emit and parse. Keep Bash and the current separator; do not introduce a broad serialization layer.
-
-**Acceptance**:
-
-- Empty fields round-trip without shifting columns.
-- Field counts are asserted in tests.
-- Current classifier and doctor tests still pass.
-
-### 2. Discovery/render split
-
-**Problem**: Some command functions still mix discovery, category decisions, and output rendering.
-
-**Direction**: Make `_audit_repo` produce complete normalized facts once; make install/doctor renderers consume those facts.
+**Direction**: Keep these rules in small private helpers inside `gg`. Do not introduce a plugin framework or a second manifest.
 
 **Acceptance**:
 
-- Current-repo doctor and `doctor --all` classification cannot drift for the same fixture.
-- Install conflict guidance consumes classifier/audit state instead of ad hoc hooksPath checks.
-- Lifecycle tests remain fixture-based.
+- A malformed or missing `# gg-globs:` header produces one clear check error.
+- Exit `0`, exit `2`, and unexpected failures retain distinct presentation.
+- Protocol tests exercise actual executable check fixtures.
 
-### 3. Registry execution contract
+### 2. Scope resolution clarity
 
-**Problem**: `checks/registry.sh` owns metadata, while execution details still live across `lefthook.yml`, `cmd_run`, README, and tests.
+**Problem**: Branch, staged, path, and explicit-range modes share file handling but differ in how Git supplies candidates and content.
 
-**Direction**: Deepen the registry just enough to express shipped safety-check execution mode, such as `lefthook` versus direct pre-push stdin handling. Keep it universal-only; do not add plugin behavior.
+**Direction**: Keep mode selection and base resolution explicit, then converge on one repository-relative file-list path before check filtering.
 
 **Acceptance**:
 
-- Branch-guard's direct pre-push stdin path is represented as registry data.
-- README rows and lefthook command coverage have parity tests against the registry.
-- Adding/removing a shipped safety check has one obvious edit point plus generated/parity artifacts.
+- Each public review mode has fixture coverage in a real temporary repository.
+- Deleted files, renamed files, spaces in paths, and an unborn branch have intentional behavior.
+- Base-resolution fallbacks are reported clearly and tested independently of check output.
+
+### 3. Check adapter consistency
+
+**Problem**: External runners expose different command lines, configuration behavior, output formats, and missing-tool failures.
+
+**Direction**: Keep one small shell adapter per tool and normalize only at that boundary. Share code only after a second concrete adapter needs the same behavior.
+
+**Acceptance**:
+
+- Every adapter emits the documented finding syntax.
+- Missing runners exit `2` with one short reason.
+- Runner errors cannot be mistaken for findings.
+- Checks do not create or recommend repository configuration.
 
 ### 4. Documentation routing
 
-**Problem**: Architecture facts are split across `CONTEXT.md`, `ROADMAP.md`, README, and changelog. Drift can mislead future agents.
+**Problem**: Architecture facts span `CONTEXT.md`, `ROADMAP.md`, README, and the changelog. Drift can mislead future contributors.
 
-**Direction**: Keep `CONTEXT.md` as invariants/ADRs, `CHANGELOG.md` as release history, README as user surface, and this file as current target shape plus next candidates.
+**Direction**: Keep invariants and ADRs in `CONTEXT.md`, release history in `CHANGELOG.md`, the user contract in README, and current target shape plus future candidates here.
 
 **Acceptance**:
 
-- No stale version-labeled “current state” sections.
-- No completed milestone listed as future work.
-- Architecture candidates cite current files and current public API names.
+- No stale version-labeled current-state sections.
+- No completed milestone is listed as future work.
+- Architecture candidates cite current files and public command names.
 
 ## Non-goals
 
-- No project-specific lint, format, typecheck, test suites, or plugin-defined checks in the shipped baseline.
-- No plugin system inside git-guardrails; git-guardrails is itself a plugin into hook orchestrators.
-- No repo-local opt-out marker.
-- No shared cross-repo Bash helper library until a second concrete consumer needs the same API.
+- No repository-specific lint, format, typecheck, test, or generated configuration.
+- No general plugin framework; executable checks are the complete extension seam.
+- No server-side enforcement or mandatory local review.
+- No shared shell helper library until a second concrete consumer needs the same API.
 
 ## Open questions
 
-- Should Homebrew-core graduation still matter after the tap-based workflow is stable?
-- Should `fallow` remain a universal safety gate or move to per-repo guidance like other JS/TS quality tools?
+- Which additional findings are sufficiently actionable and configuration-free for the advisory roster?
+- Should the narrow publication guard remain a subcommand of `gg` if its protocol stops sharing code with advisory review?
