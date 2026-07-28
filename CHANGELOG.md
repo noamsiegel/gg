@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## [v0.10.0]
 
 ### Added
 - `python-bugs` pre-commit check: a fixed, non-configurable Ruff rule set (`F821`, `F822`, `E902`) run with `--isolated` over staged blobs. Flags Python that is broken in any repository without reading or enforcing that repository's lint config. Host-injected globals (`get_ipython`, `tags`, `display`) are declared inline so Sphinx `conf.py` and IPython startup files do not false-positive; `F811` and `F823` are excluded because decorator-registered handlers legitimately reuse names. Skips cleanly when `uvx` is absent; bypass with `SKIP_PYTHON_BUGS=1`, pin with `RUFF_VERSION`.
