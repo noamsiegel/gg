@@ -4,6 +4,7 @@ This file orients agents working on **git-guardrails** itself. Read `CONTEXT.md`
 
 ## How to work here
 
+- **This repo is direct-main. Never open a pull request.** Commit to `main`, bump `GIT_GUARDRAILS_VERSION`, and follow `RELEASING.md`. Verification is local: install the checkout into a scratch prefix (`bin/` plus a sibling `share/git-guardrails/`) and drive a real `git commit`, because `bun test` alone does not exercise the shim, and the Homebrew binary on `PATH` is whatever version was last released.
 - Code edits usually go in `git-guardrails` (bash CLI), `checks/*.sh` (concrete checks), or `checks/registry.sh` (check metadata).
 - Keep hook-state logic centralized in `_classify_hook`, `_classify_repo_hooks`, and `_audit_repo`. Do not re-infer ownership or hooksPath state in command renderers.
 - Keep generated hook text centralized in `_compose_snippet`; installed hooks, conflict help, doctor help, and README examples must preserve `"$@"`, stdin, and blocking exit behavior.
@@ -12,7 +13,7 @@ This file orients agents working on **git-guardrails** itself. Read `CONTEXT.md`
 - Never add a repo-local opt-out marker. Repos must not be able to disable user-owned safety checks by committing a file.
 - Never make uninstall delete hooks unless `_classify_hook` returns `ours`.
 - Never weaken shipped config baselines in favor of repo-local config.
-- Dogfood `agents-trace`: AI-authored PRs must run `agents-trace pr-attach` and carry exactly one `🤖 agents-trace:` marker; direct emergency pushes without a PR must run `agents-trace gist-create` or `agents-trace collect` for local audit evidence.
+- Dogfood `agents-trace`: since every change here lands directly on `main` without a PR, each push must run `agents-trace gist-create` or `agents-trace collect` for local audit evidence. `agents-trace pr-attach` does not apply to this repo.
 
 ## Docs index
 
