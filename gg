@@ -84,6 +84,16 @@ existing_files() {
   done | sort -u
 }
 
+# GG_RANGE is a rev-list expression, not always a two-dot range: the first push
+# of a new branch has no remote counterpart, so the only honest description of
+# what is being published is "everything reachable from this ref that no other
+# remote ref already has". Splitting on spaces needs an explicit local IFS
+# because this script sets a global IFS of newline+tab.
+range_args() {
+  local IFS=' '
+  read -r -a "$1" <<< "$GG_RANGE"
+}
+
 collect_files() {
   case "$GG_MODE" in
     branch)
@@ -99,7 +109,10 @@ collect_files() {
       git -C "$GG_INVOKE_DIR" ls-files --full-name -- "${GG_PATHS[@]}" | existing_files
       ;;
     range)
-      git diff --name-only --diff-filter=ACMR "$GG_RANGE" | existing_files
+      local -a rargs=()
+      range_args rargs
+      git log --name-only --pretty=format: --diff-filter=ACMR "${rargs[@]}" |
+        existing_files
       ;;
   esac
 }
@@ -239,12 +252,14 @@ guard_pre_push() {
       continue
     fi
     if [[ "$remote_sha" =~ ^0+$ ]]; then
-      base=$(resolve_base) || {
-        printf 'gg: guard skipped %s because no base ref could be resolved\n' "$local_ref"
-        continue
-      }
-      GG_BASE=$base
-      GG_RANGE="$base..$local_sha"
+      # New branch: the remote has no counterpart, so everything reachable from
+      # this ref is being published. Falling back to a base ref here was a real
+      # hole - on the first push of a fresh repository no base resolves at all,
+      # the guard skipped the ref entirely, and secrets went out unchecked.
+      # `--not --remotes` excludes only what some remote already has, which is
+      # exactly the set this push introduces.
+      GG_BASE=""
+      GG_RANGE="$local_sha --not --remotes"
     else
       GG_BASE=""
       GG_RANGE="$remote_sha..$local_sha"

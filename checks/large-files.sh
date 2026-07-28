@@ -37,7 +37,11 @@ case "${GG_MODE:-}" in
 
     tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gg-large-files.XXXXXX")
     trap 'rm -rf "$tmp_dir"' EXIT
-    git -c core.quotePath=false rev-list --objects "$GG_RANGE" >"$tmp_dir/objects"
+    # GG_RANGE is a rev-list expression and may be several words, such as
+    # "<sha> --not --remotes" on the first push of a new branch. It must be
+    # word-split deliberately rather than passed as one argument.
+    read -r -a range_args <<<"$GG_RANGE"
+    git -c core.quotePath=false rev-list --objects "${range_args[@]}" >"$tmp_dir/objects"
     git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' \
       <"$tmp_dir/objects" >"$tmp_dir/sizes"
 

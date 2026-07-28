@@ -291,6 +291,39 @@ describe('blocking guard and secrets regression coverage', () => {
     expect(clean.status, combined(clean)).toBe(0);
     expect(clean.stdout).toBe('');
   });
+
+  test.skipIf(!commandExists('gitleaks'))('first push of a new branch is scanned, not skipped', () => {
+    // Regression: a new branch sends an all-zero remote sha. The guard used to
+    // fall back to a resolved base ref, and in a fresh repository no base
+    // resolves at all - so the very first push of a repository skipped the
+    // secret scan entirely and published the leak. The range for a new branch
+    // is everything no remote already has, not a diff against some base.
+    const repo = newRepo();
+    write(repo, 'secret.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    const head = commit(repo, 'initial');
+    const zeros = '0'.repeat(40);
+    const line = `refs/heads/main ${head} refs/heads/main ${zeros}\n`;
+
+    const result = gg(repo, ['guard', 'pre-push'], { input: line });
+
+    expect(result.status, combined(result)).not.toBe(0);
+    expect(result.stdout).toContain('secret.ts');
+    expect(combined(result)).not.toContain('no base ref could be resolved');
+  });
+
+  test('a clean new branch still runs the guard rather than skipping it', () => {
+    const repo = newRepo();
+    write(repo, 'safe.txt', 'safe\n');
+    const head = commit(repo, 'initial');
+    const zeros = '0'.repeat(40);
+
+    const result = gg(repo, ['guard', 'pre-push'], { input: `refs/heads/main ${head} refs/heads/main ${zeros}\n` });
+
+    expect(result.status, combined(result)).toBe(0);
+    // Proves the ref was actually examined. An early `continue` would also exit
+    // 0, which is exactly how the original hole stayed invisible.
+    expect(result.stdout).toContain('guard pre-push');
+  });
 });
 
 describe('Python check regressions', () => {
