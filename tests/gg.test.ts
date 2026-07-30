@@ -324,6 +324,71 @@ describe('blocking guard and secrets regression coverage', () => {
     // 0, which is exactly how the original hole stayed invisible.
     expect(result.stdout).toContain('guard pre-push');
   });
+
+  test.skipIf(!commandExists('gitleaks'))('merging an upstream branch forward does not scan upstream commits', () => {
+    // Regression: the existing-branch range was `$remote_sha..$local_sha`, which is
+    // everything the push adds to THAT branch. Merging origin/main forward therefore
+    // dragged every upstream commit into the scan, and a finding in someone else's
+    // already-merged file blocked the push. The only escape is --no-verify, which
+    // disables the real secret check too - a guard that trains people to bypass it.
+    const repo = newRepo();
+    write(repo, 'safe.txt', 'safe\n');
+    const root = commit(repo, 'initial');
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/main', root).status).toBe(0);
+
+    // Upstream lands a commit carrying a secret, and it is already published.
+    expect(git(repo, 'checkout', '-q', '-b', 'upstream').status).toBe(0);
+    write(repo, 'theirs.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    const upstream = commit(repo, 'upstream secret');
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/main', upstream).status).toBe(0);
+
+    // Our branch, pushed once, then merges upstream forward and adds its own clean
+    // file. The own file matters: it keeps the scan non-empty, so the header proves
+    // the ref was really examined while the upstream secret was excluded. A pure
+    // merge with no own changes contributes no files at all and is skipped silently,
+    // which would make this assertion vacuous.
+    expect(git(repo, 'checkout', '-q', '-b', 'mine', root).status).toBe(0);
+    write(repo, 'mine.txt', 'mine\n');
+    const mineFirst = commit(repo, 'mine');
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/mine', mineFirst).status).toBe(0);
+    expect(git(repo, 'merge', '--no-edit', 'upstream').status).toBe(0);
+    write(repo, 'ours-clean.txt', 'no secrets here\n');
+    const merged = commit(repo, 'mine after merge');
+
+    const line = `refs/heads/mine ${merged} refs/heads/mine ${mineFirst}\n`;
+    const result = gg(repo, ['guard', 'pre-push'], { input: line });
+
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout).not.toContain('theirs.ts');
+    // Proves the ref was examined rather than skipped, which would also exit 0.
+    expect(result.stdout).toContain('guard pre-push');
+  });
+
+  test.skipIf(!commandExists('gitleaks'))('a secret in our own commit still blocks after a forward merge', () => {
+    // The counterpart: narrowing the range must not stop scanning what we wrote.
+    const repo = newRepo();
+    write(repo, 'safe.txt', 'safe\n');
+    const root = commit(repo, 'initial');
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/main', root).status).toBe(0);
+    expect(git(repo, 'checkout', '-q', '-b', 'upstream').status).toBe(0);
+    write(repo, 'theirs.txt', 'upstream change\n');
+    const upstream = commit(repo, 'upstream');
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/main', upstream).status).toBe(0);
+
+    expect(git(repo, 'checkout', '-q', '-b', 'mine', root).status).toBe(0);
+    write(repo, 'mine.txt', 'mine\n');
+    const mineFirst = commit(repo, 'mine');
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/mine', mineFirst).status).toBe(0);
+    expect(git(repo, 'merge', '--no-edit', 'upstream').status).toBe(0);
+    write(repo, 'ours.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    const withSecret = commit(repo, 'our secret');
+
+    const line = `refs/heads/mine ${withSecret} refs/heads/mine ${mineFirst}\n`;
+    const result = gg(repo, ['guard', 'pre-push'], { input: line });
+
+    expect(result.status, combined(result)).not.toBe(0);
+    expect(result.stdout).toContain('ours.ts');
+  });
 });
 
 describe('Python check regressions', () => {

@@ -41,7 +41,15 @@ report_args=(
 set +e
 if [[ -n "${GG_RANGE:-}" ]]; then
   history_root="$tmp_dir/repository.git"
-  git clone --quiet --bare --no-local "$GG_ROOT" "$history_root" 2>>"$stderr_log"
+  # `--mirror`, not `--bare`: a bare clone maps the source's branches into
+  # refs/heads and carries NO refs/remotes at all, so a range that excludes what
+  # remotes already have (`<sha> --not --remotes`) silently matches nothing to
+  # exclude and degenerates into "everything reachable from <sha>". Pushing a
+  # branch that merged upstream forward then scans the entire upstream history and
+  # blocks on somebody else's already-published file. `--mirror` maps every ref
+  # verbatim, remote-tracking refs included, so the exclusion resolves here the
+  # same way it does in the working repository.
+  git clone --quiet --mirror --no-local "$GG_ROOT" "$history_root" 2>>"$stderr_log"
   env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML gitleaks detect \
     --source "$history_root" \
     --log-opts="$GG_RANGE" \

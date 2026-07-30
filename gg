@@ -256,19 +256,22 @@ guard_pre_push() {
     if [[ "$local_sha" =~ ^0+$ ]]; then
       continue
     fi
-    if [[ "$remote_sha" =~ ^0+$ ]]; then
-      # New branch: the remote has no counterpart, so everything reachable from
-      # this ref is being published. Falling back to a base ref here was a real
-      # hole - on the first push of a fresh repository no base resolves at all,
-      # the guard skipped the ref entirely, and secrets went out unchecked.
-      # `--not --remotes` excludes only what some remote already has, which is
-      # exactly the set this push introduces.
-      GG_BASE=""
-      GG_RANGE="$local_sha --not --remotes"
-    else
-      GG_BASE=""
-      GG_RANGE="$remote_sha..$local_sha"
-    fi
+    # What this push publishes is "reachable from this ref, and not already on any
+    # remote" - in every case, so there is no new-branch/existing-branch split here.
+    #
+    # `$remote_sha..$local_sha` was wrong for the existing-branch case: it means
+    # everything this push adds to THIS branch, so merging origin/main forward drags
+    # every upstream commit the author never wrote into the scan. A false positive in
+    # someone else's merged file then blocks the push, and the only way out is
+    # --no-verify, which disables the real secret check too. That is how a guard
+    # teaches people to bypass it.
+    #
+    # `--not --remotes` excludes what any remote already has: origin/main's history,
+    # and this branch's previously-pushed commits. For a plain fast-forward push it is
+    # identical to the old range. A merge commit contributes no files of its own to
+    # `git log --name-only`, so the merged-in changes drop out with their commits.
+    GG_BASE=""
+    GG_RANGE="$local_sha --not --remotes"
     GG_MODE=range
     GG_ALL_FILES=$(collect_files)
     [[ -n "$GG_ALL_FILES" ]] || continue
