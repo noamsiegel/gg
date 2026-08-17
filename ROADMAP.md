@@ -64,7 +64,7 @@ The v0.x milestones in this section describe the retired hook-layer product. The
 ```text
 resolve review mode and base -> repository-relative candidate files
 read each check's gg-globs header -> matching changed files
-run check with GG_ROOT, GG_BASE, GG_RANGE, GG_FILES, and GG_MODE
+run check with GG_ROOT, GG_INVOKE_DIR, GG_BASE, GG_RANGE, GG_LOCAL_REF, GG_FILES, GG_MODE
 classify exit 0 as ran, 2 as unavailable, and all others as errors
 ```
 

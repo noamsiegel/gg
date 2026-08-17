@@ -5,7 +5,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-GG_VERSION="1.0.0"
+GG_VERSION="1.1.0"
 
 _resolve_self_dir() {
   local self
@@ -24,14 +24,15 @@ fi
 usage() {
   cat <<'EOF'
 Usage:
-  gg                    Review the current branch against its base
-  gg <path>...          Review tracked files under the given paths
-  gg --staged           Review staged files
-  gg --since <ref>      Review the current branch against <ref>
-  gg guard <hook>       Block secrets and large files at publication time
-  gg self-update        Fast-forward the gg installation
-  gg --version          Print the installed version
-  gg --help             Show this help
+  gg                              Review the current branch against its base
+  gg <path>...                    Review tracked files under the given paths
+  gg --staged [-- <pathspec>...]  Review staged files, optionally scoped
+  gg --since <ref>                Review the current branch against <ref>
+  gg guard pre-push [-- <pathspec>...]
+                                  Block scoped push-range secrets and large files
+  gg self-update                  Fast-forward the gg installation
+  gg --version                    Print the installed version
+  gg --help                       Show this help
 EOF
 }
 
@@ -98,21 +99,33 @@ collect_files() {
   case "$GG_MODE" in
     branch)
       {
-        git diff --name-only --diff-filter=ACMR "$GG_BASE...HEAD"
-        git diff --name-only --diff-filter=ACMR HEAD
+        git -c core.quotePath=false diff --name-only --diff-filter=ACMR "$GG_BASE...HEAD"
+        git -c core.quotePath=false diff --name-only --diff-filter=ACMR HEAD
       } | existing_files
       ;;
     staged)
-      git diff --name-only --cached --diff-filter=ACMR | existing_files
+      if [[ ${#GG_PATHS[@]} -gt 0 ]]; then
+        git -C "$GG_INVOKE_DIR" -c core.quotePath=false diff --no-relative \
+          --name-only --cached --diff-filter=ACMR -- "${GG_PATHS[@]}"
+      else
+        git -c core.quotePath=false diff --name-only --cached --diff-filter=ACMR
+      fi | existing_files
       ;;
     paths)
-      git -C "$GG_INVOKE_DIR" ls-files --full-name -- "${GG_PATHS[@]}" | existing_files
+      git -C "$GG_INVOKE_DIR" -c core.quotePath=false ls-files \
+        --full-name -- "${GG_PATHS[@]}" | existing_files
       ;;
     range)
       local -a rargs=()
       range_args rargs
-      git log --name-only --pretty=format: --diff-filter=ACMR "${rargs[@]}" |
-        existing_files
+      if [[ ${#GG_PATHS[@]} -gt 0 ]]; then
+        git -C "$GG_INVOKE_DIR" -c core.quotePath=false log --no-relative \
+          --name-only --pretty=format: --diff-filter=ACMR \
+          "${rargs[@]}" -- "${GG_PATHS[@]}"
+      else
+        git -c core.quotePath=false log --name-only --pretty=format: \
+          --diff-filter=ACMR "${rargs[@]}"
+      fi | sed '/^$/d' | sort -u
       ;;
   esac
 }
@@ -184,8 +197,17 @@ run_checks() {
     # /bin/bash is 3.2 and a Homebrew bash 5 usually shadows it - and the split
     # hid bash-4-only builtins in the checks from every test that ran gg itself
     # under 3.2.
-    output=$(GG_ROOT="$GG_ROOT" GG_BASE="$GG_BASE" GG_RANGE="${GG_RANGE:-}" \
-      GG_FILES="$files" GG_MODE="$GG_MODE" "${BASH:-bash}" "$check" 2>/dev/null)
+    if [[ ${#GG_PATHS[@]} -gt 0 ]]; then
+      output=$(GG_ROOT="$GG_ROOT" GG_INVOKE_DIR="$GG_INVOKE_DIR" GG_BASE="$GG_BASE" \
+        GG_RANGE="${GG_RANGE:-}" GG_LOCAL_REF="${GG_LOCAL_REF:-}" \
+        GG_FILES="$files" GG_MODE="$GG_MODE" \
+        "${BASH:-bash}" "$check" -- "${GG_PATHS[@]}" 2>/dev/null)
+    else
+      output=$(GG_ROOT="$GG_ROOT" GG_INVOKE_DIR="$GG_INVOKE_DIR" GG_BASE="$GG_BASE" \
+        GG_RANGE="${GG_RANGE:-}" GG_LOCAL_REF="${GG_LOCAL_REF:-}" \
+        GG_FILES="$files" GG_MODE="$GG_MODE" \
+        "${BASH:-bash}" "$check" 2>/dev/null)
+    fi
     status=$?
     set -e
 
@@ -244,7 +266,7 @@ review() {
 }
 
 guard_pre_push() {
-  local local_ref local_sha remote_ref remote_sha base any=0
+  local local_ref local_sha remote_ref remote_sha any=0
   GG_ROOT=$(repo_root)
   cd "$GG_ROOT"
   # Git writes pre-push refs space-separated, but this script sets a global
@@ -271,6 +293,7 @@ guard_pre_push() {
     # identical to the old range. A merge commit contributes no files of its own to
     # `git log --name-only`, so the merged-in changes drop out with their commits.
     GG_BASE=""
+    GG_LOCAL_REF=$local_ref
     GG_RANGE="$local_sha --not --remotes"
     GG_MODE=range
     GG_ALL_FILES=$(collect_files)
@@ -298,6 +321,7 @@ main() {
   GG_MODE=branch
   GG_BASE=$base_override
   GG_RANGE=""
+  GG_LOCAL_REF=""
   GG_PATHS=()
 
   case "${1:-}" in
@@ -310,7 +334,15 @@ main() {
       printf 'gg %s\n' "$GG_VERSION"
       ;;
     --staged)
-      [[ $# -eq 1 ]] || fail_usage "--staged takes no arguments"
+      if [[ $# -eq 1 ]]; then
+        GG_PATHS=()
+      elif [[ $# -eq 2 && $2 == -- ]]; then
+        fail_usage "--staged requires at least one pathspec after --"
+      elif [[ $# -ge 3 && $2 == -- ]]; then
+        GG_PATHS=("${@:3}")
+      else
+        fail_usage "--staged pathspecs must follow --"
+      fi
       GG_MODE=staged
       GG_BASE=""
       review
@@ -322,8 +354,17 @@ main() {
       review
       ;;
     guard)
-      [[ $# -eq 2 ]] || fail_usage "guard requires exactly one hook name"
+      [[ $# -ge 2 ]] || fail_usage "guard requires a hook name"
       [[ $2 == pre-push ]] || fail_usage "unsupported guard hook: $2"
+      if [[ $# -eq 2 ]]; then
+        GG_PATHS=()
+      elif [[ $# -eq 3 && $3 == -- ]]; then
+        fail_usage "guard pre-push requires at least one pathspec after --"
+      elif [[ $# -ge 4 && $3 == -- ]]; then
+        GG_PATHS=("${@:4}")
+      else
+        fail_usage "guard pre-push pathspecs must follow --"
+      fi
       guard_pre_push
       ;;
     self-update)

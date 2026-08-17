@@ -41,7 +41,17 @@ case "${GG_MODE:-}" in
     # "<sha> --not --remotes" on the first push of a new branch. It must be
     # word-split deliberately rather than passed as one argument.
     read -r -a range_args <<<"$GG_RANGE"
-    git -c core.quotePath=false rev-list --objects "${range_args[@]}" >"$tmp_dir/objects"
+    if [[ $# -gt 0 ]]; then
+      [[ $1 == -- ]] || {
+        echo "large-files expected pathspecs after --"
+        exit 1
+      }
+      git -C "$GG_INVOKE_DIR" -c core.quotePath=false rev-list --objects \
+        "${range_args[@]}" "$@" >"$tmp_dir/objects"
+    else
+      git -c core.quotePath=false rev-list --objects \
+        "${range_args[@]}" >"$tmp_dir/objects"
+    fi
     git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' \
       <"$tmp_dir/objects" >"$tmp_dir/sizes"
 

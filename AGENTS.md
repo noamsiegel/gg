@@ -19,7 +19,7 @@ Each check declares its file globs in one header line:
 # gg-globs: *.py *.pyi
 ```
 
-The core invokes a check only when at least one changed file matches. It provides `GG_ROOT`, `GG_BASE`, `GG_RANGE`, `GG_FILES`, and `GG_MODE` as documented in `README.md`.
+The core invokes a check only when at least one changed file matches. It provides `GG_ROOT`, `GG_INVOKE_DIR`, `GG_BASE`, `GG_RANGE`, `GG_LOCAL_REF`, `GG_FILES`, and `GG_MODE` as documented in `README.md`.
 
 Checks emit only findings in `path:line: message` or `path: message` form. They must not print headings, banners, summaries, or blank lines. Exit `0` means the check ran, including when findings exist. Exit `2` means a required runner is unavailable and must include one short reason on stdout. Any other exit means the check itself errored.
 

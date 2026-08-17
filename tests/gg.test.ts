@@ -72,6 +72,21 @@ function gg(repo: string, args: string[] = [], options: SpawnSyncOptions = {}): 
   return run(GG, args, { cwd: repo, env: testEnv(), ...options });
 }
 
+function isolatedGg(checks: Record<string, string>): string {
+  const harness = mkdtempSync(join(tmpdir(), 'gg-isolated-'));
+  repos.push(harness);
+  const executable = join(harness, 'gg');
+  cpSync(GG, executable);
+  chmodSync(executable, 0o755);
+  mkdirSync(join(harness, 'checks'));
+  for (const [name, contents] of Object.entries(checks)) {
+    const check = join(harness, 'checks', name);
+    writeFileSync(check, contents);
+    chmodSync(check, 0o755);
+  }
+  return executable;
+}
+
 function commandExists(command: string): boolean {
   return run('/bin/sh', ['-c', `command -v ${command}`]).status === 0;
 }
@@ -79,7 +94,7 @@ function commandExists(command: string): boolean {
 function directCheck(repo: string, name: string, files: string, extra: NodeJS.ProcessEnv = {}): Result {
   return run(join(CHECKS, `${name}.sh`), [], {
     cwd: repo,
-    env: testEnv({ GG_ROOT: repo, GG_BASE: '', GG_RANGE: '', GG_MODE: 'paths', GG_FILES: files, ...extra }),
+    env: testEnv({ GG_ROOT: repo, GG_INVOKE_DIR: repo, GG_BASE: '', GG_RANGE: '', GG_LOCAL_REF: '', GG_MODE: 'paths', GG_FILES: files, ...extra }),
   });
 }
 
@@ -155,6 +170,51 @@ describe('file-set and base selection', () => {
     expect(since.stdout).toContain('path.py');
     expect(paths.stdout).toContain('path.py');
     expect(paths.stdout).not.toContain('staged.py');
+  });
+
+  test('staged pathspecs are Git-scoped relative to the invocation directory', () => {
+    const repo = newRepo();
+    write(repo, 'base.txt', 'base\n');
+    commit(repo);
+    write(repo, 'apps/hoa/inside.txt', 'inside\n');
+    write(repo, 'apps/other/outside.txt', 'outside\n');
+    expect(git(repo, 'add', 'apps/hoa/inside.txt', 'apps/other/outside.txt').status).toBe(0);
+    const capture = join(repo, 'captured-files');
+    const executable = isolatedGg({
+      'capture.sh': '#!/usr/bin/env bash\n# gg-globs: *\nprintf \'%s\' "$GG_FILES" >"$GG_CAPTURE"\n',
+    });
+
+    const scoped = run(executable, ['--staged', '--', '.'], {
+      cwd: join(repo, 'apps/hoa'),
+      env: testEnv({ GG_CAPTURE: capture }),
+    });
+
+    expect(scoped.status, combined(scoped)).toBe(0);
+    expect(readFileSync(capture, 'utf8')).toBe('apps/hoa/inside.txt');
+
+    const unfiltered = run(executable, ['--staged'], {
+      cwd: repo,
+      env: testEnv({ GG_CAPTURE: capture }),
+    });
+
+    expect(unfiltered.status, combined(unfiltered)).toBe(0);
+    expect(readFileSync(capture, 'utf8')).toBe('apps/hoa/inside.txt\napps/other/outside.txt');
+  });
+
+  test('separator forms reject missing pathspecs and unseparated trailing arguments', () => {
+    const repo = newRepo();
+    const malformed = [
+      { args: ['--staged', '--'], message: '--staged requires at least one pathspec after --' },
+      { args: ['--staged', 'apps/hoa'], message: '--staged pathspecs must follow --' },
+      { args: ['guard', 'pre-push', '--'], message: 'guard pre-push requires at least one pathspec after --' },
+      { args: ['guard', 'pre-push', 'apps/hoa'], message: 'guard pre-push pathspecs must follow --' },
+    ];
+
+    for (const { args, message } of malformed) {
+      const result = gg(repo, args);
+      expect(result.status, combined(result)).toBe(1);
+      expect(result.stderr).toContain(message);
+    }
   });
 
   test('origin/HEAD symbolic ref wins base resolution', () => {
@@ -274,6 +334,7 @@ describe('blocking guard and secrets regression coverage', () => {
     expect(result.stdout).toContain('secret.ts');
   });
 
+
   test.skipIf(!commandExists('gitleaks'))('secrets check finds a known leak and stays silent for a clean range', () => {
     const repo = newRepo();
     write(repo, 'base.txt', 'safe\n');
@@ -390,6 +451,276 @@ describe('blocking guard and secrets regression coverage', () => {
     expect(result.stdout).toContain('ours.ts');
   });
 });
+
+  test('pre-push pathspecs scope exact check files while the old form stays unfiltered', () => {
+    const repo = newRepo();
+    write(repo, 'apps/hoa/inside.txt', 'base\n');
+    write(repo, 'apps/other/outside.txt', 'base\n');
+    const base = commit(repo, 'base');
+    write(repo, 'apps/hoa/inside.txt', 'changed\n');
+    write(repo, 'apps/other/outside.txt', 'changed\n');
+    const head = commit(repo, 'mixed change');
+    const capture = join(repo, 'captured-files');
+    const executable = isolatedGg({
+      'secrets.sh': [
+        '#!/usr/bin/env bash',
+        '# gg-globs: *',
+        'printf \'%s\' "$GG_FILES" >"$GG_CAPTURE"',
+        'case "$GG_FILES" in',
+        '  *outside.txt*) printf \'outside path blocked\\n\' ;;',
+        'esac',
+        '',
+      ].join('\n'),
+    });
+    const input = `refs/heads/main ${head} refs/heads/main ${base}\n`;
+
+    const scoped = run(executable, ['guard', 'pre-push', '--', '.'], {
+      cwd: join(repo, 'apps/hoa'),
+      env: testEnv({ GG_CAPTURE: capture }),
+      input,
+    });
+
+    expect(scoped.status, combined(scoped)).toBe(0);
+    expect(readFileSync(capture, 'utf8')).toBe('apps/hoa/inside.txt');
+
+    const unfiltered = run(executable, ['guard', 'pre-push'], {
+      cwd: repo,
+      env: testEnv({ GG_CAPTURE: capture }),
+      input,
+    });
+
+    expect(unfiltered.status, combined(unfiltered)).toBe(1);
+    expect(readFileSync(capture, 'utf8')).toBe('apps/hoa/inside.txt\napps/other/outside.txt');
+  });
+
+  test.skipIf(!commandExists('gitleaks'))('scoped guard ignores non-HOA secret history and blocks deleted HOA secret history', () => {
+    const repo = newRepo();
+    write(repo, 'apps/hoa/safe.txt', 'base\n');
+    const base = commit(repo, 'base');
+    write(repo, 'apps/hoa/safe.txt', 'changed\n');
+    write(repo, 'apps/other/secret.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    commit(repo, 'outside secret');
+    rmSync(join(repo, 'apps/other/secret.ts'));
+    const outsideHead = commit(repo, 'delete outside secret');
+
+    const outside = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `refs/heads/main ${outsideHead} refs/heads/main ${base}\n`,
+    });
+
+    expect(outside.status, combined(outside)).toBe(0);
+    expect(outside.stdout).toContain('guard pre-push');
+
+    const hoaSecret = "apps/hoa/secrét [prod]'s.ts";
+    write(repo, hoaSecret, `export const token = '${STRIPE_SECRET}';\n`);
+    commit(repo, 'HOA secret');
+    rmSync(join(repo, hoaSecret));
+    const hoaHead = commit(repo, 'delete HOA secret');
+
+    const hoa = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `refs/heads/main ${hoaHead} refs/heads/main ${outsideHead}\n`,
+    });
+
+    expect(hoa.status, combined(hoa)).toBe(1);
+    expect(hoa.stdout).toContain(hoaSecret);
+  });
+
+  test.skipIf(!commandExists('gitleaks'))('scoped guard does not rescan unchanged HOA secrets from the remote boundary', () => {
+    const repo = newRepo();
+    write(repo, 'apps/hoa/published-secret.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    const base = commit(repo, 'published secret');
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/main', base).status).toBe(0);
+    write(
+      repo,
+      'apps/hoa/published-secret.ts',
+      `export const token = '${STRIPE_SECRET}';\nexport const safeChange = true;\n`,
+    );
+    write(repo, 'apps/hoa/safe.txt', 'new safe work\n');
+    const head = commit(repo, 'safe HOA change');
+
+    const result = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `refs/heads/main ${head} refs/heads/main ${base}\n`,
+    });
+
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout).toContain('guard pre-push');
+    expect(result.stdout).not.toContain('published-secret.ts');
+  });
+
+  test.skipIf(!commandExists('gitleaks'))('unrelated annotated tags do not abort a clean scoped guard', () => {
+    const repo = newRepo();
+    write(repo, 'docs/unrelated.txt', 'tagged elsewhere\n');
+    const base = commit(repo, 'unrelated base');
+    expect(git(repo, 'tag', '-a', 'unrelated', '-m', 'unrelated tag', base).status).toBe(0);
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/main', base).status).toBe(0);
+    write(repo, 'apps/hoa/safe.txt', 'safe\n');
+    const head = commit(repo, 'safe HOA change');
+
+    const result = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `refs/heads/main ${head} refs/heads/main ${base}\n`,
+    });
+
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout).toContain('guard pre-push');
+  });
+
+  test.skipIf(!commandExists('gitleaks'))('signed annotated tags are stripped in temporary scoped history', () => {
+    const repo = newRepo();
+    write(repo, 'base.txt', 'base\n');
+    const base = commit(repo, 'base');
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/main', base).status).toBe(0);
+    write(repo, 'apps/hoa/safe.txt', 'safe\n');
+    const head = commit(repo, 'safe HOA change');
+    const tagObject = [
+      `object ${head}`,
+      'type commit',
+      'tag synthetic-signed',
+      'tagger gg test <gg@example.test> 1700000000 +0000',
+      '',
+      'synthetic signed tag',
+      '-----BEGIN PGP SIGNATURE-----',
+      'not-a-real-signature',
+      '-----END PGP SIGNATURE-----',
+      '',
+    ].join('\n');
+    const hashed = run('git', ['hash-object', '-t', 'tag', '-w', '--stdin'], {
+      cwd: repo,
+      env: testEnv(),
+      input: tagObject,
+    });
+    expect(hashed.status, combined(hashed)).toBe(0);
+    expect(git(repo, 'update-ref', 'refs/tags/synthetic-signed', hashed.stdout.trim()).status).toBe(0);
+
+    const result = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `refs/heads/main ${head} refs/heads/main ${base}\n`,
+    });
+
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout).toContain('guard pre-push');
+  });
+
+  test.skipIf(!commandExists('gitleaks'))('existing export ref cannot redirect a scoped guard to different history', () => {
+    const repo = newRepo();
+    write(repo, 'base.txt', 'base\n');
+    const base = commit(repo, 'base');
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/main', base).status).toBe(0);
+    write(repo, 'apps/hoa/safe.ts', 'export const safe = true;\n');
+    const head = commit(repo, 'safe HOA change');
+    const collisionRef = `refs/heads/gg-scope-${head}`;
+
+    expect(git(repo, 'checkout', '-q', '-b', 'collision-work', base).status).toBe(0);
+    write(repo, 'apps/hoa/safe.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    const collision = commit(repo, 'collision secret');
+    expect(git(repo, 'update-ref', collisionRef, collision).status).toBe(0);
+    expect(git(repo, 'checkout', '-q', 'main').status).toBe(0);
+    expect(git(repo, 'branch', '-D', 'collision-work').status).toBe(0);
+
+    const result = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `refs/heads/main ${head} refs/heads/main ${base}\n`,
+    });
+
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout).toContain('guard pre-push');
+    expect(result.stdout).not.toContain('collision secret');
+  });
+
+  test.skipIf(!commandExists('gitleaks'))('annotated local tag rewrites a filtered target and still scans selected history', () => {
+    const repo = newRepo();
+    write(repo, 'apps/hoa/safe.txt', 'base\n');
+    const base = commit(repo, 'base');
+    expect(git(repo, 'update-ref', 'refs/remotes/origin/main', base).status).toBe(0);
+    write(repo, 'apps/hoa/tagged-secret.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    commit(repo, 'tagged secret');
+    expect(git(repo, 'commit', '--allow-empty', '-q', '-m', 'tag wrapper').status).toBe(0);
+    expect(git(repo, 'tag', '-a', 'release', '-m', 'release').status).toBe(0);
+    const tag = git(repo, 'rev-parse', 'refs/tags/release').stdout.trim();
+    const zeros = '0'.repeat(40);
+
+    const result = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `refs/tags/release ${tag} refs/tags/release ${zeros}\n`,
+    });
+
+    expect(result.status, combined(result)).toBe(1);
+    expect(result.stdout).toContain('apps/hoa/tagged-secret.ts');
+  });
+
+  test.skipIf(!commandExists('gitleaks'))('scoped guard maps HEAD to an imported ref and scans deleted HOA secret history', () => {
+    const repo = newRepo();
+    write(repo, 'apps/hoa/safe.txt', 'base\n');
+    const base = commit(repo, 'base');
+    write(repo, 'apps/hoa/secret.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    commit(repo, 'HOA secret');
+    rmSync(join(repo, 'apps/hoa/secret.ts'));
+    const head = commit(repo, 'delete HOA secret');
+
+    const result = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `HEAD ${head} refs/heads/feature ${base}\n`,
+    });
+
+    expect(result.status, combined(result)).toBe(1);
+    expect(result.stdout).toContain('apps/hoa/secret.ts');
+  });
+
+  test.skipIf(!commandExists('gitleaks'))('scoped guard fails closed when local ref no longer matches buffered SHA', () => {
+    const repo = newRepo();
+    write(repo, 'apps/hoa/safe.txt', 'base\n');
+    const base = commit(repo, 'base');
+    write(repo, 'apps/hoa/safe.txt', 'changed\n');
+    commit(repo, 'changed');
+
+    const result = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `HEAD ${base} refs/heads/feature ${base}\n`,
+    });
+
+    expect(result.status, combined(result)).toBe(1);
+    expect(result.stdout).toContain('secrets\n  (error:');
+  });
+
+  test.skipIf(!commandExists('gitleaks'))('scoped guard fails closed for raw and expression local refs', () => {
+    const repo = newRepo();
+    write(repo, 'apps/hoa/safe.txt', 'base\n');
+    commit(repo, 'base');
+    write(repo, 'apps/hoa/safe.txt', 'changed\n');
+    const head = commit(repo, 'changed');
+
+    for (const localRef of [head, 'HEAD~0']) {
+      const result = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+        input: `${localRef} ${head} refs/heads/feature ${'0'.repeat(40)}\n`,
+      });
+
+      expect(result.status, combined(result)).toBe(1);
+      expect(result.stdout).toContain('secrets\n  (error:');
+    }
+  });
+
+  test('scoped guard ignores non-HOA large-file history and blocks deleted HOA large-file history', () => {
+    const repo = newRepo();
+    write(repo, 'apps/hoa/safe.txt', 'base\n');
+    const base = commit(repo, 'base');
+    write(repo, 'apps/hoa/safe.txt', 'changed\n');
+    write(repo, 'apps/other/large.bin', Buffer.alloc(6 * 1024 * 1024));
+    commit(repo, 'outside large file');
+    rmSync(join(repo, 'apps/other/large.bin'));
+    const outsideHead = commit(repo, 'delete outside large file');
+
+    const outside = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `refs/heads/main ${outsideHead} refs/heads/main ${base}\n`,
+    });
+
+    expect(outside.status, combined(outside)).toBe(0);
+    expect(outside.stdout).toContain('guard pre-push');
+
+    write(repo, 'apps/hoa/large.bin', Buffer.alloc(6 * 1024 * 1024));
+    commit(repo, 'HOA large file');
+    rmSync(join(repo, 'apps/hoa/large.bin'));
+    const hoaHead = commit(repo, 'delete HOA large file');
+
+    const hoa = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
+      input: `refs/heads/main ${hoaHead} refs/heads/main ${outsideHead}\n`,
+    });
+
+    expect(hoa.status, combined(hoa)).toBe(1);
+    expect(hoa.stdout).toContain('apps/hoa/large.bin');
+  });
 
 describe('Python check regressions', () => {
   test.skipIf(!commandExists('uvx'))('python-bugs reports F821 but accepts Sphinx injected tags', () => {

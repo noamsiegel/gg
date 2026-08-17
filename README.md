@@ -24,13 +24,15 @@ gg self-update
 |---|---|
 | `gg` | Current branch against the resolved base ref |
 | `gg <path>...` | Specific files or directories |
-| `gg --staged` | The index |
+| `gg --staged [-- <pathspec>...]` | The index, optionally scoped |
 | `gg --since <ref>` | Current work against an arbitrary ref |
-| `gg guard pre-push` | Push range with the two blocking publication checks |
+| `gg guard pre-push [-- <pathspec>...]` | Push range with the two blocking publication checks, optionally scoped |
 | `gg self-update` | Installed checkout via `git pull --ff-only` |
 | `gg --version` | Installed version |
 
 Base resolution is: an explicit override, `origin/HEAD`, `origin/main`, `origin/master`, `origin/develop`, then `HEAD~1`.
+
+Scoped staged and pre-push forms require the `--` separator. Git interprets each pathspec relative to the directory where `gg` was invoked and applies it while reading the index or pushed commit range. Forms without pathspecs keep their full existing scope.
 
 Normal review commands always exit `0`, including when they find issues or a check errors. `gg guard` exits non-zero on a blocking finding.
 
@@ -60,12 +62,15 @@ Use `# gg-globs: *` to receive every changed file. The core filters the file lis
 | Environment | Meaning |
 |---|---|
 | `GG_ROOT` | Absolute repository top level |
-| `GG_BASE` | Resolved base ref; empty in staged and path modes |
-| `GG_RANGE` | `<base>..<head>`, set only in range mode |
-| `GG_FILES` | Newline-separated repository-relative paths matching the declared globs; never empty |
+| `GG_INVOKE_DIR` | Absolute directory where `gg` was invoked |
+| `GG_BASE` | Resolved base ref in branch mode; empty otherwise |
+| `GG_RANGE` | Git revision expression in range mode; pre-push uses `<local-sha> --not --remotes`; empty otherwise |
+| `GG_LOCAL_REF` | Exact local ref token from pre-push stdin; empty outside the guard |
+| `GG_FILES` | Newline-separated repository-relative Git paths matching the declared globs; never empty and may name deleted range files |
 | `GG_MODE` | `branch`, `staged`, `paths`, or `range` |
-
 Checks print findings only, one per line, as `path:line: message` or `path: message` when no line is available. They do not print headings, banners, summaries, or blank lines. Presentation belongs to `gg`.
+
+For scoped staged and pre-push reviews, checks also receive the unchanged separator and pathspec arguments as `-- <pathspec>...`. Checks that produce their own Git input must apply those arguments or the Git-produced `GG_FILES` as literal top-level pathspecs, never filter worktree output.
 
 | Exit | Meaning |
 |---|---|
@@ -79,11 +84,12 @@ One blocking remnant exists: the user's own global `pre-push` hook chain may cal
 
 ```bash
 gg guard pre-push
+gg guard pre-push -- apps/hoa
 ```
 
-It runs only secrets and large-file checks over the push range. A local commit is recoverable; a push is publication. Those two checks protect irreversible history and credential exposure, so they block before publication. No other advisory check does.
+It runs only secrets and large-file checks over the push range. The scoped form still scans selected history, including a secret or large blob introduced and deleted within that range. A local commit is recoverable; a push is publication. Those two checks protect irreversible history and credential exposure, so they block before publication. No other advisory check does.
 
-This hook is user-managed and global. `gg` does not install it, does not enter repositories, and never speaks during a commit.
+This global hook is user-managed; `gg` does not install hooks or enter repositories. Repository-owned hooks may invoke advisory review modes, but advisory findings and check errors still exit `0` and cannot block a commit.
 
 ## What it doesn't do
 
