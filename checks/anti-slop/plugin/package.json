@@ -1,0 +1,9 @@
+{
+  "name": "gg-anti-slop",
+  "private": true,
+  "type": "module",
+  "description": "Vendored dmmulroy/anti-slop Oxlint rules, run by gg's anti-slop check. @oxlint/plugins is pinned to the same version the check installs oxlint at.",
+  "dependencies": {
+    "@oxlint/plugins": "1.78.0"
+  }
+}

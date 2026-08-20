@@ -839,3 +839,52 @@ describe('interpreter portability', () => {
     expect(combined(result)).not.toContain('mapfile');
   });
 });
+
+describe('anti-slop check', () => {
+  const hasNpm = commandExists('npx') && commandExists('npm');
+
+  test.skipIf(!hasNpm)('reports vendored anti-slop violations scoped to the changed file, exiting zero', () => {
+    const repo = newRepo();
+    write(repo, 'clean.ts', 'export function ok(name: string): string {\n  return name;\n}\n');
+    commit(repo, 'base');
+    write(repo, 'slop.ts', 'export function save(value: object) {}\nexport function handle(input: unknown) {\n  return input;\n}\n');
+    commit(repo, 'work');
+
+    const result = directCheck(repo, 'anti-slop', 'slop.ts\nclean.ts');
+
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout).toContain('slop.ts:1: ');
+    expect(result.stdout).toContain('[anti-slop/no-object-parameters]');
+    expect(result.stdout).toContain('[anti-slop/no-unknown-parameters]');
+    // The finding is scoped to the file that carries it; the clean file is silent.
+    expect(result.stdout).not.toContain('clean.ts');
+  });
+
+  test.skipIf(!hasNpm)('ignores the repository Oxlint config, preserving a repo-independent verdict', () => {
+    const repo = newRepo();
+    // A repository config that tries to silence an anti-slop rule and add its own
+    // must change nothing: gg lints with its own config and --disable-nested-config.
+    write(repo, '.oxlintrc.json', JSON.stringify({
+      rules: { 'anti-slop/no-object-parameters': 'off', 'no-console': 'error' },
+    }));
+    write(repo, 'slop.ts', 'export function save(value: object) {}\nconsole.log("noise");\n');
+    commit(repo, 'base');
+
+    const result = directCheck(repo, 'anti-slop', 'slop.ts');
+
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout).toContain('[anti-slop/no-object-parameters]');
+    expect(result.stdout).not.toContain('no-console');
+  });
+
+  test.skipIf(!hasNpm)('is silent and exits zero when the changed files carry no slop', () => {
+    const repo = newRepo();
+    write(repo, 'good.ts', 'export function greet(name: string): string {\n  return `hi ${name}`;\n}\n');
+    commit(repo, 'base');
+
+    const result = directCheck(repo, 'anti-slop', 'good.ts');
+
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+});

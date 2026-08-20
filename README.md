@@ -45,9 +45,10 @@ Normal review commands always exit `0`, including when they find issues or a che
 | `complexity` | Radon via `uvx` | `*.py` | Complexity regressions in changed functions relative to the base |
 | `architecture` | import-linter via `uvx` | `*.py` | Violated import contracts, only when the repository already provides contracts |
 | `js-health` | Fallow `2.79.0` via `npx` | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Diff-relative JavaScript and TypeScript health findings |
+| `anti-slop` | Oxlint `1.78.0` via `npx` with vendored [anti-slop](https://github.com/dmmulroy/anti-slop) rules | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Low-evidence patterns: unparsed `unknown`/`object` inputs, chained or undocumented type assertions, `unknown`-valued dictionaries, module mocks. Runs a fixed rule set with the repository's own Oxlint config ignored |
 | `secrets` | Gitleaks on `PATH` | All changed files | Secrets in current work; also runs in the blocking pre-push guard |
 
-Missing runners do not fail a review. The summary identifies skipped checks, which is why the installer reports whether `uvx`, `npx`, and `gitleaks` are available.
+Missing runners do not fail a review. The summary identifies skipped checks, which is why the installer reports whether `uvx`, `npx`, and `gitleaks` are available. The `anti-slop` check installs its one vendored dependency (`@oxlint/plugins`) under `checks/anti-slop/plugin` the first time it reviews JS/TS files, using `npm`; if `npm` is absent or offline that check skips cleanly and nothing is written into the repository under review.
 
 ## Adding a check
 
