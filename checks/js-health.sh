@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
 # gg-globs: *.ts *.tsx *.js *.jsx *.mjs *.cjs
-#
-# Fallow owns diff attribution itself, so giving it the same resolved base as gg
-# preserves its whole-program analysis while keeping the report scoped to the
-# work under review. Fallow 2.79 has no direct-file audit mode; pretending that
-# staged or path input is a branch diff would produce findings for the wrong
-# changeset, so those modes are reported as unavailable instead.
-
 set -euo pipefail
 
 if ! command -v npx >/dev/null 2>&1; then
   echo "npx is not available"
-  exit 2
-fi
-
-if [[ -z "${GG_BASE:-}" ]]; then
-  printf 'fallow needs a base ref; not available in %s mode\n' "${GG_MODE:-unknown}"
   exit 2
 fi
 
@@ -31,15 +19,48 @@ errlog=$(mktemp)
 trap 'rm -f "$errlog"' EXIT
 
 set +e
-output=$(cd "$GG_ROOT" && npx --yes "fallow@${FALLOW_VERSION}" audit \
-  --quiet \
-  --format compact \
-  --changed-since="$GG_BASE" 2>"$errlog")
+if [[ "$GG_MODE" == branch ]]; then
+  output=$(cd "$GG_ROOT" && npx --yes "fallow@${FALLOW_VERSION}" audit \
+    --quiet --no-cache --format compact --changed-since="$GG_BASE" 2>"$errlog")
+else
+  output=$(cd "$GG_ROOT" && npx --yes "fallow@${FALLOW_VERSION}" \
+    --quiet --no-cache --format compact 2>"$errlog")
+fi
 status=$?
 set -e
 
 if [[ -n "$output" ]]; then
-  printf '%s\n' "$output" | sed -E 's/^([^:]+) +:([0-9]+)/\1:\2:/'
+  if [[ "$GG_MODE" == branch ]]; then
+    printf '%s\n' "$output" | sed -E 's/^([^:]+) +:([0-9]+)/\1:\2:/'
+  else
+    printf '%s\n' "$output" | awk '
+      BEGIN {
+        count = split(ENVIRON["GG_FILES"], paths, "\n")
+      }
+      {
+        kind = $0
+        sub(/:.*/, "", kind)
+        if (kind == "file-score" || kind == "vital-signs") next
+        record = substr($0, length(kind) + 2)
+        path = ""
+        for (i = 1; i <= count; i++) {
+          candidate = paths[i]
+          if ((record == candidate || index(record, candidate ":") == 1) && length(candidate) > length(path)) path = candidate
+        }
+        if (path != "") {
+          detail = substr(record, length(path) + 2)
+          line = ""
+          if (detail ~ /^[0-9]+(-[0-9]+)?:/) {
+            line = detail
+            sub(/:.*/, "", line)
+            sub(/-.*/, "", line)
+            sub(/^[^:]*:/, "", detail)
+          }
+          printf "%s:%s %s%s\n", path, (line == "" ? "" : line ":"), kind, (detail == "" ? "" : ":" detail)
+        }
+      }
+    '
+  fi
 fi
 
 # Fallow uses 1 for a fail verdict and 2 for its own execution errors.

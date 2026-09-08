@@ -34,6 +34,10 @@ Base resolution is: an explicit override, `origin/HEAD`, `origin/main`, `origin/
 
 Scoped staged and pre-push forms require the `--` separator. Git interprets each pathspec relative to the directory where `gg` was invoked and applies it while reading the index or pushed commit range. Forms without pathspecs keep their full existing scope.
 
+JavaScript health uses Fallow's combined analysis for `--staged` and selected paths, reporting findings only in selected files. These scoped modes report existing findings too, not just regressions. Staged JavaScript analysis reads a temporary snapshot of the entire Git index, so unstaged repairs cannot hide staged defects and unchanged indexed imports retain context. Ignored dependencies and untracked files are not copied into that snapshot; dependency installation and runtime verification remain outside this static review. Branch mode keeps the base-relative audit.
+
+A skipped or errored check marks the summary `coverage incomplete`; zero findings does not mean all checks ran.
+
 Normal review commands always exit `0`, including when they find issues or a check errors. `gg guard` exits non-zero on a blocking finding.
 
 ## Review roster
@@ -44,7 +48,7 @@ Normal review commands always exit `0`, including when they find issues or a che
 | `dead-code` | Vulture via `uvx` | `*.py` | Likely unused Python code; scans the whole repository, then reports only findings in changed files |
 | `complexity` | Radon via `uvx` | `*.py` | Complexity regressions in changed functions relative to the base |
 | `architecture` | import-linter via `uvx` | `*.py` | Violated import contracts, only when the repository already provides contracts |
-| `js-health` | Fallow `2.79.0` via `npx` | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Diff-relative JavaScript and TypeScript health findings |
+| `js-health` | Fallow `2.79.0` via `npx` | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Base-relative findings for branches; whole-project analysis filtered to selected files for paths and the index |
 | `anti-slop` | Oxlint `1.78.0` via `npx` with vendored [anti-slop](https://github.com/dmmulroy/anti-slop) rules | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Low-evidence patterns: unparsed `unknown`/`object` inputs, chained or undocumented type assertions, `unknown`-valued dictionaries, module mocks. Runs a fixed rule set with the repository's own Oxlint config ignored |
 | `secrets` | Gitleaks on `PATH` | All changed files | Secrets in current work; also runs in the blocking pre-push guard |
 

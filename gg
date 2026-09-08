@@ -81,7 +81,7 @@ repo_root() {
 existing_files() {
   local file
   while IFS= read -r file; do
-    [[ -n "$file" && -f "$GG_ROOT/$file" ]] && printf '%s\n' "$file"
+    [[ -n "$file" && ( "$GG_MODE" == staged || -f "$GG_ROOT/$file" ) ]] && printf '%s\n' "$file"
   done | sort -u
 }
 
@@ -135,6 +135,7 @@ check_files() {
   globs_line=$(sed -n 's/^# gg-globs:[[:space:]]*//p' "$check" | sed -n '1p')
   [[ -n "$globs_line" ]] || return 0
   while IFS= read -r file; do
+    [[ "$GG_MODE" == staged && "${check##*/}" != js-health.sh && ! -f "$GG_ROOT/$file" ]] && continue
     base=${file##*/}
     matched=false
     local -a globs=()
@@ -197,17 +198,22 @@ run_checks() {
     # /bin/bash is 3.2 and a Homebrew bash 5 usually shadows it - and the split
     # hid bash-4-only builtins in the checks from every test that ran gg itself
     # under 3.2.
-    if [[ ${#GG_PATHS[@]} -gt 0 ]]; then
-      output=$(GG_ROOT="$GG_ROOT" GG_INVOKE_DIR="$GG_INVOKE_DIR" GG_BASE="$GG_BASE" \
-        GG_RANGE="${GG_RANGE:-}" GG_LOCAL_REF="${GG_LOCAL_REF:-}" \
-        GG_FILES="$files" GG_MODE="$GG_MODE" \
-        "${BASH:-bash}" "$check" -- "${GG_PATHS[@]}" 2>/dev/null)
-    else
-      output=$(GG_ROOT="$GG_ROOT" GG_INVOKE_DIR="$GG_INVOKE_DIR" GG_BASE="$GG_BASE" \
-        GG_RANGE="${GG_RANGE:-}" GG_LOCAL_REF="${GG_LOCAL_REF:-}" \
-        GG_FILES="$files" GG_MODE="$GG_MODE" \
-        "${BASH:-bash}" "$check" 2>/dev/null)
-    fi
+    output=$(
+      export GG_ROOT GG_INVOKE_DIR GG_BASE GG_RANGE GG_LOCAL_REF GG_MODE
+      export GG_FILES="$files"
+      if [[ "$GG_MODE" == staged && "$name" == js-health ]]; then
+        snapshot=$(mktemp -d) || exit 3
+        trap 'rm -rf "$snapshot"' EXIT
+        if ! git checkout-index --all --ignore-skip-worktree-bits --prefix="$snapshot/"; then
+          printf '%s\n' 'cannot materialize the Git index for JavaScript health'
+          exit 3
+        fi
+        export GG_ROOT="$snapshot"
+      fi
+      set --
+      if [[ ${#GG_PATHS[@]} -gt 0 ]]; then set -- -- "${GG_PATHS[@]}"; fi
+      "${BASH:-bash}" "$check" "$@" 2>/dev/null
+    )
     status=$?
     set -e
 
@@ -236,6 +242,7 @@ run_checks() {
     "$findings" "$([[ $findings -eq 1 ]] || printf 's')" \
     "$ran_checks" "$([[ $ran_checks -eq 1 ]] || printf 's')"
   [[ $skipped -gt 0 ]] && printf ' · %s skipped' "$skipped"
+  [[ $skipped -gt 0 || $errors -gt 0 ]] && printf ' · coverage incomplete'
   [[ $errors -gt 0 ]] && printf ' · %s error%s' "$errors" "$([[ $errors -eq 1 ]] || printf 's')"
   printf '\n'
 

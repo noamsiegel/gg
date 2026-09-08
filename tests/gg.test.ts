@@ -888,3 +888,73 @@ describe('anti-slop check', () => {
     expect(result.stdout.trim()).toBe('');
   });
 });
+
+describe('scoped JavaScript health', () => {
+  const engine = process.env.GG_TEST_FALLOW;
+  function review(repo: string, args: string[]) {
+    const executable = isolatedGg({ 'js-health.sh': readFileSync(join(CHECKS, 'js-health.sh'), 'utf8') });
+    const bin = join(dirname(executable), 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'npx'), '#!/bin/sh\nshift 2\nexec "$GG_TEST_FALLOW" "$@"\n');
+    chmodSync(join(bin, 'npx'), 0o755);
+    return run(executable, args, { cwd: repo, env: testEnv({ PATH: `${bin}:${process.env.PATH}`, GG_TEST_FALLOW: engine }) });
+  }
+  function project(repo: string) {
+    write(repo, 'package.json', '{"name":"fixture","type":"module","main":"index.js"}\n');
+    write(repo, 'index.js', 'console.log("entry");\n');
+    commit(repo);
+  }
+  test.skipIf(!engine)('selected paths report unchanged files without unrelated findings', () => {
+    const repo = newRepo();
+    project(repo);
+    write(repo, 'selected.js', 'export const unused = 1;\n');
+    write(repo, 'unrelated.js', 'export const unrelated = 2;\n');
+    commit(repo);
+    const result = review(repo, ['selected.js']);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('selected.js:');
+    expect(result.stdout).not.toContain('unrelated.js');
+    expect(result.stdout).not.toContain('skipped');
+  });
+  test.skipIf(!engine)('colon paths retain exact attribution and branch mode still audits', () => {
+    const repo = newRepo();
+    project(repo);
+    write(repo, 'foo.js', 'console.log("used");\n');
+    write(repo, 'foo.js:bar.js', 'export const unused = 1;\n');
+    write(repo, 'index.js', 'import "./foo.js";\n');
+    commit(repo);
+    const scoped = review(repo, ['foo.js', 'foo.js:bar.js']);
+    expect(scoped.stdout).toContain('foo.js:bar.js: unused-file');
+    expect(scoped.stdout).not.toContain('foo.js: unused-file');
+    const branch = review(repo, ['--since', 'HEAD~1']);
+    expect(branch.stdout).not.toContain('skipped');
+    expect(branch.stdout).not.toContain('(error:');
+    expect(branch.stdout).toContain('foo.js:bar.js');
+  });
+  test.skipIf(!engine)('staged review uses the full index and ignores worktree repairs', () => {
+    const repo = newRepo();
+    project(repo);
+    write(repo, 'old.js', 'export const used = 1;\n');
+    write(repo, 'index.js', 'import { used } from "./old.js"; console.log(used);\n');
+    commit(repo);
+    git(repo, 'mv', 'old.js', 'renamed.js');
+    write(repo, 'index.js', 'import { used } from "./renamed.js"; console.log(used);\n');
+    write(repo, 'new.js', 'export const unused = 2;\n');
+    git(repo, 'add', '-A');
+    write(repo, 'index.js', 'import { unused } from "./new.js"; console.log(unused);\n');
+    write(repo, 'unrelated.js', 'export const unrelated = 3;\n');
+    rmSync(join(repo, 'new.js'));
+    const before = git(repo, 'diff', '--binary', 'HEAD').stdout;
+    const indexBefore = git(repo, 'diff', '--cached', '--binary').stdout;
+    const filesBefore = snapshot(repo);
+    const result = review(repo, ['--staged']);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('new.js:');
+    expect(result.stdout).not.toContain('renamed.js:');
+    expect(result.stdout).not.toContain('unrelated.js:');
+    expect(result.stdout).not.toContain('skipped');
+    expect(git(repo, 'diff', '--binary', 'HEAD').stdout).toBe(before);
+    expect(git(repo, 'diff', '--cached', '--binary').stdout).toBe(indexBefore);
+    expect(snapshot(repo)).toEqual(filesBefore);
+  });
+});
