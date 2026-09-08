@@ -39,7 +39,7 @@ cat "$GG_UPDATE_TEST_ROOT/response"
 exit "$(cat "$GG_UPDATE_TEST_ROOT/status")"
 `);
   chmodSync(join(bin, 'curl'), 0o755);
-  function response(value: unknown, status = 0) {
+  function response(value: { sha: string }, status = 0) {
     writeFileSync(join(root, 'response'), JSON.stringify(value));
     writeFileSync(join(root, 'status'), String(status));
   }
