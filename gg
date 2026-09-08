@@ -7,6 +7,7 @@ IFS=$'\n\t'
 
 GG_VERSION="2.0.0"
 GG_JSON=false
+GG_FULL=false
 GG_TIMEOUT=120
 GG_UPDATE='{"status":"unknown"}'
 
@@ -35,6 +36,7 @@ Usage:
                                   Block scoped push-range secrets and large files
   gg setup                       Install pinned review runners explicitly
   gg --json [review arguments]    Emit structured check results (requires jq)
+  gg --full [...]                Show every finding (default first 100 per check)
   gg --timeout SECONDS [...]      Per-check limit (default 120, GNU timeout)
   gg self-update                  Install the latest stable release
   gg --version                    Print the installed version
@@ -50,8 +52,12 @@ EOF
 }
 
 fail_usage() {
-  printf 'gg: %s\n' "$1" >&2
-  usage >&2
+  if $GG_JSON && command -v jq >/dev/null 2>&1; then
+    jq -cn --arg message "$1" '{schema_version:1,error:{code:"usage",message:$message},help:["gg --help"]}'
+  else
+    printf 'gg: %s\n' "$1" >&2
+    usage >&2
+  fi
   exit 1
 }
 
@@ -266,16 +272,28 @@ run_checks() {
       findings=$((findings + line_count))
       [[ $line_count -gt 0 ]] && blocked=1
     fi
+    local shown_output="$scratch/output" omitted=0
+    if [[ $status -eq 0 ]] && ! $GG_FULL && [[ $line_count -gt 100 ]]; then
+      sed -n '1,100p' "$scratch/output" >"$scratch/preview"
+      shown_output="$scratch/preview"
+      omitted=$((line_count - 100))
+    fi
+    if ! $GG_FULL; then
+      if awk 'length($0)>1000 {print substr($0,1,1000) " (truncated, " length($0) " chars; use --full)"; next} {print}' "$shown_output" >"$scratch/bounded"; then
+        shown_output="$scratch/bounded"
+      fi
+    fi
     if $GG_JSON; then
-      jq -cn --arg name "$name" --arg status "$result_status" --rawfile output "$scratch/output" \
-        '{name:$name,status:$status} + (if $status == "completed" then {findings:($output|split("\n")|map(select(length>0)))} else {reason:($output|rtrimstr("\n"))} end)' >>"$scratch/results"
+      jq -cn --arg name "$name" --arg status "$result_status" --argjson omitted "$omitted" --rawfile output "$shown_output" \
+        '{name:$name,status:$status} + (if $status == "completed" then {findings:($output|split("\n")|map(select(length>0)))} else {reason:($output|rtrimstr("\n"))} end) + (if $omitted > 0 then {omitted:$omitted,help:["gg --full with the same review arguments"]} else {} end)' >>"$scratch/results"
     elif [[ -n "$output" || $status -ne 0 ]]; then
-      printf '\n'; render_check "$name" "$output" "$status"
+      printf '\n'; render_check "$name" "$(cat "$shown_output")" "$status"
+      [[ $omitted -gt 0 ]] && printf '  (%s findings omitted; rerun with --full)\n' "$omitted"
     fi
   done
   if $GG_JSON; then
-    jq -s --argjson update "$GG_UPDATE" --arg mode "$GG_MODE" --arg base "$GG_BASE" --argjson findings "$findings" --argjson completed "$ran_checks" --argjson skipped "$skipped" --argjson errors "$errors" --argjson not_applicable "$not_applicable" \
-      '{schema_version:1,mode:$mode,base:$base,update:$update,checks:.,summary:{findings:$findings,completed:$completed,skipped:$skipped,errors:$errors,not_applicable:$not_applicable,coverage_complete:($skipped==0 and $errors==0)}}' "$scratch/results"
+    jq -cs --argjson update "$GG_UPDATE" --arg mode "$GG_MODE" --arg base "$GG_BASE" --argjson findings "$findings" --argjson completed "$ran_checks" --argjson skipped "$skipped" --argjson errors "$errors" --argjson not_applicable "$not_applicable" \
+      '{schema_version:1,mode:$mode,base:$base,update:$update,checks:.,summary:{findings:$findings,completed:$completed,skipped:$skipped,errors:$errors,not_applicable:$not_applicable,coverage_complete:($skipped==0 and $errors==0)},help:(if $skipped>0 then ["gg setup, then rerun the same review"] elif $errors>0 then ["Resolve check errors, then rerun the same review"] else ["gg --help"] end)}' "$scratch/results"
   else
     printf '\n%s findings across %s checks' "$findings" "$ran_checks"
     [[ $not_applicable -gt 0 ]] && printf ' · %s not applicable' "$not_applicable"
@@ -283,6 +301,9 @@ run_checks() {
     [[ $errors -gt 0 ]] && printf ' · %s errors' "$errors"
     [[ $skipped -gt 0 || $errors -gt 0 ]] && printf ' · coverage incomplete'
     printf '\n'
+    if [[ $skipped -gt 0 ]]; then printf 'next: gg setup, then rerun the same review\n';
+    elif [[ $errors -gt 0 ]]; then printf 'next: resolve check errors, then rerun the same review\n';
+    else printf 'help: gg --help\n'; fi
   fi
   cleanup
   trap - EXIT INT TERM
@@ -369,10 +390,17 @@ main() {
   GG_LOCAL_REF=""
   GG_PATHS=()
 
+  # Recognize machine output even when an earlier argument is invalid.
+  local option
+  for option in "$@"; do
+    [[ "$option" == -- ]] && break
+    [[ "$option" == --json ]] && GG_JSON=true
+  done
   local -a arguments=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) GG_JSON=true; shift ;;
+      --full) GG_FULL=true; shift ;;
       --timeout)
         [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || fail_usage '--timeout requires positive whole seconds'
         GG_TIMEOUT=$2; shift 2 ;;
@@ -382,6 +410,13 @@ main() {
   done
   if [[ ${#arguments[@]} -gt 0 ]]; then set -- "${arguments[@]}"; else set --; fi
   if $GG_JSON; then command -v jq >/dev/null 2>&1 || fail_usage '--json requires jq'; fi
+  if [[ $# -eq 2 && "$2" == --help ]]; then
+    case "$1" in
+      setup) printf 'Usage: gg setup\nPrepare pinned analysis runners; never runs during review.\n'; return ;;
+      self-update) printf 'Usage: gg self-update\nInstall latest stable release; refuse local modifications.\n'; return ;;
+      guard) printf 'Usage: gg guard pre-push [-- <pathspec>...]\nRead Git pre-push refs on stdin; block findings or unavailable protection.\n'; return ;;
+    esac
+  fi
   case "${1:-}" in
     --help|-h)
       [[ $# -eq 1 ]] || fail_usage "--help takes no arguments"

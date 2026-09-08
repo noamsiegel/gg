@@ -126,3 +126,22 @@ This global hook is user-managed; `gg` does not install hooks or enter repositor
 ## Release policy
 
 Stable tags use `vMAJOR.MINOR.PATCH` matching `GG_VERSION`. Tag CI runs the full suite before publishing the GitHub release. Install, self-update, and update notices use the latest published non-prerelease release, never the moving main branch. No release means installation fails with an actionable error rather than silently installing development code. Version 2 changes execution exit codes; callers that previously assumed every review succeeded must handle exit 2 or inspect JSON coverage.
+
+## Agent ergonomics
+
+Reviews show up to 100 findings per check and 1,000 characters per line by default, with explicit omission markers and unchanged total counts. `--full` restores all output. JSON is compact, retains structured statuses, and includes contextual help. Usage failures under `--json` have a structured `error`; `setup --help`, `self-update --help`, and `guard --help` are read-only discovery commands.
+
+[AXI principles](https://axi.md/) assessment (2026-09-08):
+
+- Efficiency: compact JSON and concise text; keep the existing format instead of adding TOON dependencies.
+- Small records: each check reports name, status, and findings/reason.
+- Bounds: explicit truncation plus `--full`.
+- Aggregates: total findings and coverage counters.
+- Empty results: explicit zero-count summary.
+- Errors: machine-readable usage/check failures and nonzero execution status.
+- Context: on-demand `gg`; no harness hooks, per repository policy.
+- Content first: bare `gg` reviews current work.
+- Guidance: contextual next steps accompany results.
+- Help: subcommands expose read-only help.
+
+These are applicable principles, not a claim of literal AXI format compliance. JSON compatibility and the no-hooks policy remain intentional. External Git/network setup failures can still originate on stderr; review errors are structured.

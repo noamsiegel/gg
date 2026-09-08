@@ -1057,3 +1057,29 @@ describe('CLI presentation and snapshot boundaries', () => {
    expect(report.summary.not_applicable).toBe(1);
    expect(report.summary.coverage_complete).toBe(true);
  });
+
+ test('agent output bounds findings, preserves totals and offers full data', () => {
+   const repo=newRepo(); write(repo,'a.x','x'); commit(repo);
+   const cli=isolatedGg({'many.sh':'#!/bin/bash\n# gg-globs: *\ni=0; while [ "$i" -lt 105 ]; do echo "a.x: finding $i"; i=$((i+1)); done\n'});
+   const result=run(cli,['--json','a.x'],{cwd:repo,env:testEnv()});
+   expect(result.status).toBe(0);
+   const report=JSON.parse(result.stdout);
+   expect(report.summary.findings).toBe(105);
+   expect(report.checks[0].findings).toHaveLength(100);
+   expect(report.checks[0].omitted).toBe(5);
+   const full=run(cli,['--json','--full','a.x'],{cwd:repo,env:testEnv()});
+   expect(JSON.parse(full.stdout).checks[0].findings).toHaveLength(105);
+   const invalid=run(cli,['--timeout','bad','--json'],{cwd:repo,env:testEnv()});
+   expect(invalid.status).toBe(1);
+   expect(JSON.parse(invalid.stdout).error.code).toBe('usage');
+   for (const command of ['setup','self-update','guard']) {
+     const help=run(cli,['--full',command,'--help'],{cwd:repo,env:testEnv()});
+     expect(help.status).toBe(0);
+     expect(help.stdout).toContain('Usage: gg '+command);
+   }
+   writeFileSync(join(dirname(cli),'checks/many.sh'),'#!/bin/bash\n# gg-globs: *\nprintf "%02000d\\n" 0\n');
+   const long=run(cli,['--json','a.x'],{cwd:repo,env:testEnv()});
+   expect(JSON.parse(long.stdout).checks[0].findings[0]).toContain('truncated, 2000 chars');
+   const longFull=run(cli,['--json','--full','a.x'],{cwd:repo,env:testEnv()});
+   expect(JSON.parse(longFull.stdout).checks[0].findings[0]).toHaveLength(2000);
+ });
