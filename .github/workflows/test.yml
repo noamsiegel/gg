@@ -16,7 +16,10 @@ jobs:
           bun-version: latest
 
       - name: Install check runners
-        run: brew install gitleaks uv
+        run: brew install gitleaks uv jq coreutils
+
+      - name: Prepare pinned review runners
+        run: ./gg setup
 
       - name: Lint shell scripts
         # /bin/bash is deliberate, not incidental: macOS ships bash 3.2 and
@@ -27,10 +30,13 @@ jobs:
           /bin/bash --version | head -1
           /bin/bash -n gg
           /bin/bash -n install.sh
+          /bin/bash -n setup.sh
+          /bin/bash -n snapshot.sh
+          /bin/bash -n update-check.sh
           for f in checks/*.sh; do /bin/bash -n "$f"; done
 
       - name: Run test suite
-        run: bun test tests/gg.test.ts
+        run: bun test tests/
 
       - name: Smoke check
         run: ./gg --version

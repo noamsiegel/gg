@@ -20,10 +20,8 @@
 
 set -euo pipefail
 
-if ! command -v uvx >/dev/null 2>&1; then
-  printf '%s\n' 'uvx is required for python-bugs'
-  exit 2
-fi
+source "$(dirname "$0")/runners"
+gg_require_runner python ruff
 
 # bash 3.2 (macOS default) has no mapfile.
 files=()
@@ -35,7 +33,7 @@ trap 'rm -f "$output"' EXIT
 
 cd "$GG_ROOT"
 status=0
-uvx "ruff@${RUFF_VERSION:-0.14.2}" check \
+"$runner" check \
   --isolated \
   --no-cache \
   --quiet \

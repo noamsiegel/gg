@@ -48,8 +48,8 @@ printf 'gg installed\n'
 printf '  version: %s\n' "$version"
 printf '  install: %s\n' "$GG_HOME"
 printf '  command: %s -> %s\n' "$LINK_PATH" "$GG_HOME/gg"
-printf '  optional runners:\n'
-for runner in uvx npx gitleaks; do
+printf '  runner prerequisites (prepare tools with gg setup):\n'
+for runner in uv bun node timeout jq gitleaks; do
   if command -v "$runner" >/dev/null 2>&1; then
     printf '    %s: present\n' "$runner"
   else

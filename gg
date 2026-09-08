@@ -5,7 +5,10 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-GG_VERSION="1.1.0"
+GG_VERSION="1.2.0"
+GG_JSON=false
+GG_TIMEOUT=120
+GG_UPDATE='{"status":"unknown"}'
 
 _resolve_self_dir() {
   local self
@@ -17,7 +20,7 @@ GG_SELF_DIR=$(_resolve_self_dir)
 GG_CHECKS_DIR="$GG_SELF_DIR/checks"
 GG_INVOKE_DIR=$PWD
 COLOR=false
-if [[ -t 1 ]]; then
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   COLOR=true
 fi
 
@@ -30,9 +33,17 @@ Usage:
   gg --since <ref>                Review the current branch against <ref>
   gg guard pre-push [-- <pathspec>...]
                                   Block scoped push-range secrets and large files
+  gg setup                       Install pinned review runners explicitly
+  gg --json [review arguments]    Emit structured check results (requires jq)
+  gg --timeout SECONDS [...]      Per-check limit (default 120, GNU timeout)
   gg self-update                  Fast-forward the gg installation
   gg --version                    Print the installed version
   gg --help                       Show this help
+
+Examples:
+  gg --staged -- src/
+  gg --json --since origin/main
+  NO_COLOR=1 gg --timeout 60 src/
 EOF
 }
 
@@ -135,7 +146,6 @@ check_files() {
   globs_line=$(sed -n 's/^# gg-globs:[[:space:]]*//p' "$check" | sed -n '1p')
   [[ -n "$globs_line" ]] || return 0
   while IFS= read -r file; do
-    [[ "$GG_MODE" == staged && "${check##*/}" != js-health.sh && ! -f "$GG_ROOT/$file" ]] && continue
     base=${file##*/}
     matched=false
     local -a globs=()
@@ -173,82 +183,103 @@ render_check() {
 }
 
 run_checks() {
-  local guard=$1 check name files output status line_count
-  local findings=0 ran_checks=0 skipped=0 errors=0 blocked=0
+  local guard=$1 check name files output status line_count check_root
+  local findings=0 ran_checks=0 skipped=0 errors=0 blocked=0 runner_pid=""
   local -a checks=()
-
+  local scratch timeout_bin
+  local GG_BASE=$GG_BASE
+  if [[ "$GG_MODE" == staged ]]; then GG_BASE=$(git rev-parse --verify HEAD 2>/dev/null || true); fi
+  scratch=$(mktemp -d) || return 1
+  cleanup() {
+    if [[ -n "$runner_pid" ]]; then
+      kill -TERM "$runner_pid" 2>/dev/null || true
+      wait "$runner_pid" 2>/dev/null || true
+    fi
+    rm -rf "$scratch"
+  }
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  timeout_bin=$(command -v timeout || command -v gtimeout || true)
+  : >"$scratch/results"
   if $guard; then
     for check in "$GG_CHECKS_DIR/secrets.sh" "$GG_CHECKS_DIR/large-files.sh"; do
       [[ -f "$check" ]] && checks+=("$check")
     done
   elif [[ -d "$GG_CHECKS_DIR" ]]; then
-    while IFS= read -r check; do
-      checks+=("$check")
-    done < <(find "$GG_CHECKS_DIR" -maxdepth 1 -type f -name '*.sh' -print | sort)
+    while IFS= read -r check; do checks+=("$check"); done < <(find "$GG_CHECKS_DIR" -maxdepth 1 -type f -name '*.sh' -print | sort)
+  fi
+  check_root=$GG_ROOT
+  if [[ "$GG_MODE" == staged && -n "$timeout_bin" ]]; then
+    "$timeout_bin" --kill-after=2 "$GG_TIMEOUT" "${BASH:-bash}" "$GG_SELF_DIR/snapshot.sh" "$GG_ROOT" "$scratch/tree" >"$scratch/output" 2>"$scratch/error" &
+    runner_pid=$!
+    if wait "$runner_pid"; then check_root="$scratch/tree"; else check_root=""; fi
+    runner_pid=""
   fi
 
   for check in "${checks[@]}"; do
     files=$(check_files "$check")
     [[ -n "$files" ]] || continue
-    name=${check##*/}
-    name=${name%.sh}
-    set +e
-    # "$BASH" runs each check under the SAME interpreter running gg, rather than
-    # whichever bash PATH happens to resolve. On macOS those differ constantly -
-    # /bin/bash is 3.2 and a Homebrew bash 5 usually shadows it - and the split
-    # hid bash-4-only builtins in the checks from every test that ran gg itself
-    # under 3.2.
-    output=$(
-      export GG_ROOT GG_INVOKE_DIR GG_BASE GG_RANGE GG_LOCAL_REF GG_MODE
-      export GG_FILES="$files"
-      if [[ "$GG_MODE" == staged && "$name" == js-health ]]; then
-        snapshot=$(mktemp -d) || exit 3
-        trap 'rm -rf "$snapshot"' EXIT
-        if ! git checkout-index --all --ignore-skip-worktree-bits --prefix="$snapshot/"; then
-          printf '%s\n' 'cannot materialize the Git index for JavaScript health'
-          exit 3
-        fi
-        export GG_ROOT="$snapshot"
-      fi
-      set --
-      if [[ ${#GG_PATHS[@]} -gt 0 ]]; then set -- -- "${GG_PATHS[@]}"; fi
-      "${BASH:-bash}" "$check" "$@" 2>/dev/null
-    )
-    status=$?
-    set -e
-
-    if [[ $status -eq 0 ]]; then
-      ran_checks=$((ran_checks + 1))
-      if [[ -z "$output" ]]; then
-        continue
+    name=${check##*/}; name=${name%.sh}
+    : >"$scratch/output"
+    status=0
+    if [[ -z "$check_root" ]]; then
+      printf '%s\n' 'cannot materialize the Git index' >"$scratch/output"
+      status=3
+    elif [[ -z "$timeout_bin" ]]; then
+      printf '%s\n' 'GNU timeout is required; install coreutils' >"$scratch/output"
+      status=2
+    else
+      (
+        cd "$check_root" || exit 3
+        export GG_ROOT="$check_root" GG_INVOKE_DIR GG_BASE GG_RANGE GG_LOCAL_REF GG_MODE GG_FILES="$files"
+        if [[ "$GG_MODE" == staged ]]; then export GG_INVOKE_DIR="$check_root" GG_BASE="$(git rev-parse --verify HEAD 2>/dev/null || true)"; fi
+        set --
+        if [[ ${#GG_PATHS[@]} -gt 0 ]]; then set -- -- "${GG_PATHS[@]}"; fi
+        exec "$timeout_bin" --kill-after=2 "$GG_TIMEOUT" "${BASH:-bash}" "$check" "$@"
+      ) >"$scratch/output" 2>"$scratch/error" &
+      runner_pid=$!
+      wait "$runner_pid" || status=$?
+      runner_pid=""
+      if [[ $status -eq 124 || $status -eq 137 ]]; then
+        printf 'check exceeded %s seconds\n' "$GG_TIMEOUT" >"$scratch/output"
+        status=3
+      elif [[ $status -ne 0 && ! -s "$scratch/output" ]]; then
+        tail -c 1000 "$scratch/error" >"$scratch/output"
       fi
     fi
-
-    printf '\n'
-    render_check "$name" "$output" "$status"
+    output=$(cat "$scratch/output")
+    local result_status=completed
     if [[ $status -eq 2 ]]; then
-      skipped=$((skipped + 1))
+      result_status=skipped; skipped=$((skipped + 1)); $guard && blocked=1
     elif [[ $status -ne 0 ]]; then
-      errors=$((errors + 1))
-      blocked=1
+      result_status=error; errors=$((errors + 1)); blocked=1
     else
+      ran_checks=$((ran_checks + 1))
       line_count=$(printf '%s\n' "$output" | sed '/^$/d' | wc -l | tr -d ' ')
       findings=$((findings + line_count))
-      blocked=1
+      [[ $line_count -gt 0 ]] && blocked=1
+    fi
+    if $GG_JSON; then
+      jq -cn --arg name "$name" --arg status "$result_status" --rawfile output "$scratch/output" \
+        '{name:$name,status:$status} + (if $status == "completed" then {findings:($output|split("\n")|map(select(length>0)))} else {reason:($output|rtrimstr("\n"))} end)' >>"$scratch/results"
+    elif [[ -n "$output" || $status -ne 0 ]]; then
+      printf '\n'; render_check "$name" "$output" "$status"
     fi
   done
-
-  printf '\n%s finding%s across %s check%s' \
-    "$findings" "$([[ $findings -eq 1 ]] || printf 's')" \
-    "$ran_checks" "$([[ $ran_checks -eq 1 ]] || printf 's')"
-  [[ $skipped -gt 0 ]] && printf ' · %s skipped' "$skipped"
-  [[ $skipped -gt 0 || $errors -gt 0 ]] && printf ' · coverage incomplete'
-  [[ $errors -gt 0 ]] && printf ' · %s error%s' "$errors" "$([[ $errors -eq 1 ]] || printf 's')"
-  printf '\n'
-
-  if $guard && [[ $blocked -ne 0 ]]; then
-    return 1
+  if $GG_JSON; then
+    jq -s --argjson update "$GG_UPDATE" --arg mode "$GG_MODE" --arg base "$GG_BASE" --argjson findings "$findings" --argjson completed "$ran_checks" --argjson skipped "$skipped" --argjson errors "$errors" \
+      '{schema_version:1,mode:$mode,base:$base,update:$update,checks:.,summary:{findings:$findings,completed:$completed,skipped:$skipped,errors:$errors,coverage_complete:($skipped==0 and $errors==0)}}' "$scratch/results"
+  else
+    printf '\n%s findings across %s checks' "$findings" "$ran_checks"
+    [[ $skipped -gt 0 ]] && printf ' · %s skipped' "$skipped"
+    [[ $errors -gt 0 ]] && printf ' · %s errors' "$errors"
+    [[ $skipped -gt 0 || $errors -gt 0 ]] && printf ' · coverage incomplete'
+    printf '\n'
   fi
+  cleanup
+  trap - EXIT INT TERM
+  if $guard && [[ $blocked -ne 0 ]]; then return 1; fi
   return 0
 }
 
@@ -257,6 +288,12 @@ review() {
   GG_ROOT=$(repo_root)
   cd "$GG_ROOT"
   GG_ALL_FILES=$(collect_files)
+  if [[ -f "$GG_SELF_DIR/update-check.sh" && -z "${CI:-}" ]]; then
+    GG_UPDATE=$("${BASH:-bash}" "$GG_SELF_DIR/update-check.sh" "$GG_SELF_DIR")
+    if ! $GG_JSON && [[ "$GG_UPDATE" == *'"status":"available"'* ]]; then
+      printf 'gg: update available; run gg self-update\n' >&2
+    fi
+  fi
   count=0
   if [[ -n "$GG_ALL_FILES" ]]; then
     count=$(printf '%s\n' "$GG_ALL_FILES" | wc -l | tr -d ' ')
@@ -267,8 +304,10 @@ review() {
     paths) label=paths ;;
     range) label="range $GG_RANGE" ;;
   esac
-  printf 'gg  %s  (%s file%s)\n' "$label" "$count" "$([[ $count -eq 1 ]] || printf 's')"
-  [[ $count -gt 0 ]] && run_checks false || printf '\n0 findings across 0 checks\n'
+  $GG_JSON || printf 'gg  %s  (%s file%s)\n' "$label" "$count" "$([[ $count -eq 1 ]] || printf 's')"
+  local result=0
+  run_checks false || result=$?
+  [[ $result -eq 130 || $result -eq 143 ]] && exit "$result"
   return 0
 }
 
@@ -305,7 +344,7 @@ guard_pre_push() {
     GG_MODE=range
     GG_ALL_FILES=$(collect_files)
     [[ -n "$GG_ALL_FILES" ]] || continue
-    printf 'gg  guard pre-push  (%s)\n' "$local_ref"
+    $GG_JSON || printf 'gg  guard pre-push  (%s)\n' "$local_ref"
     run_checks true || any=1
   done
   return "$any"
@@ -331,6 +370,19 @@ main() {
   GG_LOCAL_REF=""
   GG_PATHS=()
 
+  local -a arguments=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) GG_JSON=true; shift ;;
+      --timeout)
+        [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || fail_usage '--timeout requires positive whole seconds'
+        GG_TIMEOUT=$2; shift 2 ;;
+      --) arguments+=("$@"); break ;;
+      *) arguments+=("$1"); shift ;;
+    esac
+  done
+  if [[ ${#arguments[@]} -gt 0 ]]; then set -- "${arguments[@]}"; else set --; fi
+  if $GG_JSON; then command -v jq >/dev/null 2>&1 || fail_usage '--json requires jq'; fi
   case "${1:-}" in
     --help|-h)
       [[ $# -eq 1 ]] || fail_usage "--help takes no arguments"
@@ -338,7 +390,7 @@ main() {
       ;;
     --version|-V)
       [[ $# -eq 1 ]] || fail_usage "--version takes no arguments"
-      printf 'gg %s\n' "$GG_VERSION"
+      printf 'gg %s (%s)\n' "$GG_VERSION" "$(git -C "$GG_SELF_DIR" rev-parse --short HEAD 2>/dev/null || printf unknown)"
       ;;
     --staged)
       if [[ $# -eq 1 ]]; then
@@ -374,13 +426,17 @@ main() {
       fi
       guard_pre_push
       ;;
+    setup)
+      [[ $# -eq 1 ]] || fail_usage "setup takes no arguments"
+      "${BASH:-bash}" "$GG_SELF_DIR/setup.sh"
+      ;;
     self-update)
       [[ $# -eq 1 ]] || fail_usage "self-update takes no arguments"
       self_update
       ;;
     "")
       GG_BASE=$(resolve_base) || {
-        printf 'gg: no base ref could be resolved; nothing to review\n'
+        if $GG_JSON; then printf '%s\n' '{"schema_version":1,"mode":"branch","checks":[],"summary":{"coverage_complete":false},"reason":"no base ref could be resolved"}'; else printf 'gg: no base ref could be resolved; nothing to review\n'; fi
         exit 0
       }
       review

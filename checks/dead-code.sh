@@ -10,10 +10,8 @@
 
 set -euo pipefail
 
-if ! command -v uvx >/dev/null 2>&1; then
-  printf '%s\n' 'uvx is required for dead-code'
-  exit 2
-fi
+source "$(dirname "$0")/runners"
+gg_require_runner python vulture
 
 cd "$GG_ROOT"
 # Written for bash 3.2, which is what macOS ships and always will. Two rules:
@@ -39,7 +37,7 @@ output=$(mktemp)
 trap 'rm -f "$output"' EXIT
 
 status=0
-uvx "vulture@${VULTURE_VERSION:-2.14}" "${python_files[@]}" >"$output" || status=$?
+"$runner" "${python_files[@]}" >"$output" || status=$?
 # Vulture exits 3 when it found dead code. That is a successful check run.
 # Vulture exits 1 on its own errors. Exit 2 is reserved for "runner unavailable"
 # in the gg protocol, so remap anything unexpected to 3 rather than leaking it.

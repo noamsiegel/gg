@@ -2,12 +2,8 @@
 # gg-globs: *.ts *.tsx *.js *.jsx *.mjs *.cjs
 set -euo pipefail
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "npx is not available"
-  exit 2
-fi
-
-FALLOW_VERSION="${FALLOW_VERSION:-2.79.0}"
+source "$(dirname "$0")/runners"
+gg_require_runner js fallow
 
 # Compact output is normally already path:line: message. Older compact
 # renderers put a space before :line; normalize only that separator and leave
@@ -20,10 +16,10 @@ trap 'rm -f "$errlog"' EXIT
 
 set +e
 if [[ "$GG_MODE" == branch ]]; then
-  output=$(cd "$GG_ROOT" && npx --yes "fallow@${FALLOW_VERSION}" audit \
+  output=$(cd "$GG_ROOT" && "$runner" audit \
     --quiet --no-cache --format compact --changed-since="$GG_BASE" 2>"$errlog")
 else
-  output=$(cd "$GG_ROOT" && npx --yes "fallow@${FALLOW_VERSION}" \
+  output=$(cd "$GG_ROOT" && "$runner" \
     --quiet --no-cache --format compact 2>"$errlog")
 fi
 status=$?

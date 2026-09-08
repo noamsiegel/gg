@@ -3,7 +3,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rea
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
+import { spawn, spawnSync, type SpawnSyncOptions } from 'node:child_process';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const GG = join(ROOT, 'gg');
@@ -43,6 +43,7 @@ function testEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     GIT_COMMITTER_NAME: 'gg test',
     GIT_COMMITTER_EMAIL: 'gg@example.test',
     NO_COLOR: '1',
+    GG_NO_UPDATE_CHECK: '1',
     ...extra,
   };
 }
@@ -77,8 +78,10 @@ function isolatedGg(checks: Record<string, string>): string {
   repos.push(harness);
   const executable = join(harness, 'gg');
   cpSync(GG, executable);
+  cpSync(join(ROOT, 'snapshot.sh'), join(harness, 'snapshot.sh'));
   chmodSync(executable, 0o755);
   mkdirSync(join(harness, 'checks'));
+  cpSync(join(CHECKS, 'runners'), join(harness, 'checks', 'runners'));
   for (const [name, contents] of Object.entries(checks)) {
     const check = join(harness, 'checks', name);
     writeFileSync(check, contents);
@@ -304,16 +307,16 @@ describe('dispatch and check protocol', () => {
     commit(repo);
     const bin = mkdtempSync(join(tmpdir(), 'gg-path-'));
     repos.push(bin);
-    for (const tool of ['git', 'bash', 'sed', 'sort', 'find', 'wc', 'tr', 'dirname', 'realpath']) {
+    for (const tool of ['git', 'bash', 'sed', 'sort', 'find', 'wc', 'tr', 'dirname', 'realpath', 'timeout', 'mktemp', 'cat', 'rm', 'tail']) {
       const source = run('/bin/sh', ['-c', `command -v ${tool}`]).stdout.trim();
       if (source) Bun.spawnSync(['ln', '-s', source, join(bin, tool)]);
     }
 
-    const result = gg(repo, ['app.py', 'app.ts'], { env: testEnv({ PATH: bin }) });
+    const result = gg(repo, ['app.py', 'app.ts'], { env: testEnv({ PATH: bin, GG_TOOLS_DIR: join(repo, 'absent-tools') }) });
 
     expect(result.status, combined(result)).toBe(0);
-    expect(result.stdout.includes('uvx is required') || result.stdout.includes('uvx required')).toBe(true);
-    expect(result.stdout).toContain('npx is not available');
+    expect(result.stdout).toContain('run gg setup');
+    expect(result.stdout).toContain('node is required');
     expect(result.stdout).toContain('gitleaks is not available');
     expect(result.stdout).not.toContain('(error:');
   });
@@ -791,7 +794,7 @@ describe('metadata visible through supported behavior', () => {
 
     expect(missing).toEqual([]);
     expect(version.status, combined(version)).toBe(0);
-    expect(version.stdout).toMatch(/^gg \d+\.\d+\.\d+\n$/);
+    expect(version.stdout).toMatch(/^gg \d+\.\d+\.\d+ \([a-f0-9]+\)\n$/);
   });
 });
 
@@ -890,14 +893,10 @@ describe('anti-slop check', () => {
 });
 
 describe('scoped JavaScript health', () => {
-  const engine = process.env.GG_TEST_FALLOW;
+  const engine = existsSync(join(process.env.GG_TOOLS_DIR ?? join(process.env.HOME!, '.local/share/gg-tools'), 'js/node_modules/.bin/fallow'));
   function review(repo: string, args: string[]) {
     const executable = isolatedGg({ 'js-health.sh': readFileSync(join(CHECKS, 'js-health.sh'), 'utf8') });
-    const bin = join(dirname(executable), 'bin');
-    mkdirSync(bin);
-    writeFileSync(join(bin, 'npx'), '#!/bin/sh\nshift 2\nexec "$GG_TEST_FALLOW" "$@"\n');
-    chmodSync(join(bin, 'npx'), 0o755);
-    return run(executable, args, { cwd: repo, env: testEnv({ PATH: `${bin}:${process.env.PATH}`, GG_TEST_FALLOW: engine }) });
+    return run(executable, args, { cwd: repo, env: testEnv() });
   }
   function project(repo: string) {
     write(repo, 'package.json', '{"name":"fixture","type":"module","main":"index.js"}\n');
@@ -956,5 +955,93 @@ describe('scoped JavaScript health', () => {
     expect(git(repo, 'diff', '--binary', 'HEAD').stdout).toBe(before);
     expect(git(repo, 'diff', '--cached', '--binary').stdout).toBe(indexBefore);
     expect(snapshot(repo)).toEqual(filesBefore);
+  });
+});
+
+describe('CLI reliability', () => {
+  test('JSON preserves findings and distinguishes skipped and errored checks', () => {
+    const repo = newRepo(); write(repo, 'a.x', 'x'); commit(repo);
+    const cli = isolatedGg({
+      'a.sh': '#!/bin/bash\n# gg-globs: *\nprintf \'a.x:1: "quoted"\\n\'\n',
+      'b.sh': '#!/bin/bash\n# gg-globs: *\necho unavailable; exit 2\n',
+      'c.sh': '#!/bin/bash\n# gg-globs: *\necho broken; exit 3\n',
+    });
+    const r = run(cli, ['--json', 'a.x'], { cwd: repo, env: testEnv() });
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout);
+    expect(report.checks.map((x: {status: string}) => x.status)).toEqual(['completed', 'skipped', 'error']);
+    expect(report.checks[0].findings).toEqual(['a.x:1: "quoted"']);
+    expect(report.summary.coverage_complete).toBe(false);
+    expect(report.summary.findings).toBe(1);
+  });
+  test('every staged check receives indexed source and unchanged import context', () => {
+    const repo = newRepo(); write(repo, 'a.x', 'base'); write(repo, 'context.x', 'context'); commit(repo);
+    write(repo, 'a.x', 'staged'); git(repo, 'add', 'a.x'); write(repo, 'a.x', 'unstaged');
+    const cli = isolatedGg({ 'probe.sh': '#!/bin/bash\n# gg-globs: *\nprintf "a.x: %s %s\\n" "$(cat a.x)" "$(cat context.x)"\n' });
+    const r = run(cli, ['--staged', '--json'], { cwd: repo, env: testEnv() });
+    expect(JSON.parse(r.stdout).checks[0].findings).toEqual(['a.x: staged context']);
+    expect(readFileSync(join(repo, 'a.x'), 'utf8')).toBe('unstaged');
+  });
+  test('timeout terminates the runner and reports incomplete coverage', () => {
+    const repo = newRepo(); write(repo, 'a.x', 'x'); commit(repo);
+    const cli = isolatedGg({ 'slow.sh': '#!/bin/bash\n# gg-globs: *\nsleep 30 &\necho $! > "$PID_FILE"\nwait\n' });
+    const pidFile = join(repo, 'pid');
+    const started = Date.now();
+    const r = run(cli, ['--json', '--timeout', '1', 'a.x'], { cwd: repo, env: testEnv({ PID_FILE: pidFile }) });
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(JSON.parse(r.stdout).checks[0].status).toBe('error');
+    expect(JSON.parse(r.stdout).checks[0].reason).toContain('exceeded 1 seconds');
+    const pid = readFileSync(pidFile, 'utf8').trim();
+    expect(run('ps', ['-p', pid, '-o', 'stat=']).stdout.trim().replace(/^Z.*$/, '')).toBe('');
+  });
+  test('SIGINT stops child work and cleans the staged snapshot', async () => {
+    const repo = newRepo(); write(repo, 'a.x', 'base'); commit(repo); write(repo, 'a.x', 'staged'); git(repo, 'add', '.');
+    const cli = isolatedGg({ 'slow.sh': '#!/bin/bash\n# gg-globs: *\nprintf "%s\\n" "$GG_ROOT" > "$ROOT_FILE"\nsleep 30 &\necho $! > "$PID_FILE"\nwait\n' });
+    const pidFile=join(repo,'pid'), rootFile=join(repo,'root');
+    const child=spawn(cli,['--staged'],{cwd:repo,env:testEnv({PID_FILE:pidFile,ROOT_FILE:rootFile}),stdio:'ignore'});
+    const exited = new Promise<number | null>(resolve=>child.once('exit',resolve));
+    for(let i=0;i<100 && !existsSync(pidFile);i++) await Bun.sleep(20);
+    expect(existsSync(pidFile)).toBe(true);
+    child.kill('SIGINT');
+    const status=await Promise.race([exited,Bun.sleep(4000).then(()=>{child.kill('SIGKILL');return -1;})]);
+    expect(status).toBe(130);
+    expect(existsSync(readFileSync(rootFile,'utf8').trim())).toBe(false);
+    expect(run('ps',['-p',readFileSync(pidFile,'utf8').trim(),'-o','stat=']).stdout.trim().replace(/^Z.*$/, '')).toBe('');
+  });
+});
+
+describe('CLI presentation and snapshot boundaries', () => {
+  test('staged bytes ignore checkout filters and snapshot failures stay structured', () => {
+    const repo=newRepo(); write(repo,'a.x','base'); write(repo,'.gitattributes','*.x filter=poison'); commit(repo);
+    git(repo,'config','filter.poison.smudge','printf changed');
+    write(repo,'a.x','indexed'); git(repo,'add','a.x');
+    const cli=isolatedGg({'probe.sh':'#!/bin/bash\n# gg-globs: *.x\nprintf "a.x: %s\\n" "$(cat a.x)"\n'});
+    const good=run(cli,['--staged','--json'],{cwd:repo,env:testEnv()});
+    expect(JSON.parse(good.stdout).checks[0].findings).toEqual(['a.x: indexed']);
+    writeFileSync(join(dirname(cli),'snapshot.sh'),'#!/bin/bash\nexit 1\n');
+    const failed=run(cli,['--staged','--json'],{cwd:repo,env:testEnv()});
+    expect(failed.status).toBe(0);
+    expect(JSON.parse(failed.stdout).checks[0].status).toBe('error');
+    expect(JSON.parse(failed.stdout).summary.coverage_complete).toBe(false);
+  });
+  test('update notice reaches noninteractive stderr and JSON without corrupting stdout', () => {
+    const repo=newRepo(); write(repo,'a.x','x'); commit(repo);
+    const cli=isolatedGg({'ok.sh':'#!/bin/bash\n# gg-globs: *\nexit 0\n'});
+    writeFileSync(join(dirname(cli),'update-check.sh'), '#!/bin/bash\nprintf \'%s\\n\' \'{"status":"available","command":"gg self-update"}\'\n');
+    const human=run(cli,['a.x'],{cwd:repo,env:testEnv({CI:''})});
+    expect(human.stderr).toContain('update available; run gg self-update');
+    const machine=run(cli,['--json','a.x'],{cwd:repo,env:testEnv({CI:''})});
+    expect(JSON.parse(machine.stdout).update.command).toBe('gg self-update');
+    const ci=run(cli,['--json','a.x'],{cwd:repo,env:testEnv({CI:'true'})});
+    expect(JSON.parse(ci.stdout).update.status).toBe('unknown');
+  });
+  test('NO_COLOR disables actual terminal formatting', () => {
+    const repo=newRepo(); write(repo,'a.x','x'); commit(repo);
+    const cli=isolatedGg({'hit.sh':'#!/bin/bash\n# gg-globs: *\necho "a.x: finding"\n'});
+    const colored=run('script',['-q','/dev/null',cli,'a.x'],{cwd:repo,env:testEnv({NO_COLOR:''})});
+    expect(colored.stdout).toContain('\x1b[');
+    const plain=run('script',['-q','/dev/null',cli,'a.x'],{cwd:repo,env:testEnv({NO_COLOR:'1'})});
+    expect(plain.stdout).not.toContain('\x1b[');
+    expect(plain.stdout).toContain('a.x: finding');
   });
 });

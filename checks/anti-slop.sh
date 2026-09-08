@@ -12,39 +12,24 @@
 # or reshape what fires. gg never reads or authors the repository's Oxlint config.
 #
 # Footprint stays inside gg's own checkout: the vendored plugin's single runtime
-# dependency (@oxlint/plugins) is installed under checks/anti-slop/plugin, not in
+# dependency (@oxlint/plugins) is prepared by gg setup under checks/anti-slop/plugin, not in
 # the repository under review.
 
 set -euo pipefail
 
-ANTI_SLOP_OXLINT_VERSION="${ANTI_SLOP_OXLINT_VERSION:-1.78.0}"
+source "$(dirname "$0")/runners"
+gg_require_runner js oxlint
 
 check_dir=$(cd "$(dirname "$0")" && pwd)
 plugin_dir="$check_dir/anti-slop/plugin"
 config="$check_dir/anti-slop/gg-oxlint.config.ts"
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "npx is not available"
-  exit 2
-fi
-
-# One scratch file for the whole run: the install phase and the lint phase both
-# capture stderr here, and a single EXIT trap cleans it up.
 errlog=$(mktemp)
 trap 'rm -f "$errlog"' EXIT
 
-# The plugin's rule modules import @oxlint/plugins at load time, and oxlint ships
-# with no dependencies, so the package must be resolvable next to the vendored
-# plugin. Install it once into gg's own checkout; its presence is the sentinel.
 if [[ ! -f "$plugin_dir/node_modules/@oxlint/plugins/package.json" ]]; then
-  if ! command -v npm >/dev/null 2>&1; then
-    echo "npm is not available to install the anti-slop plugin dependency"
-    exit 2
-  fi
-  if ! (cd "$plugin_dir" && npm install --silent --no-audit --no-fund --no-package-lock) >"$errlog" 2>&1; then
-    printf 'anti-slop dependencies unavailable: %s\n' "$(tr '\n' ' ' <"$errlog" | tail -c 200)"
-    exit 2
-  fi
+  printf '%s\n' 'anti-slop dependency unavailable; run gg setup'
+  exit 2
 fi
 
 # gg passes changed files newline-separated in GG_FILES, already repo-relative and
@@ -56,7 +41,7 @@ done <<< "${GG_FILES:-}"
 [[ ${#files[@]} -gt 0 ]] || exit 0
 
 set +e
-output=$(npx --yes "oxlint@${ANTI_SLOP_OXLINT_VERSION}" \
+output=$("$runner" \
   --config "$config" \
   --disable-nested-config \
   --disable-unicorn-plugin \

@@ -8,10 +8,8 @@
 
 set -euo pipefail
 
-if ! command -v uvx >/dev/null 2>&1; then
-  printf '%s\n' 'uvx is required for complexity'
-  exit 2
-fi
+source "$(dirname "$0")/runners"
+gg_require_runner python radon
 if ! command -v python3 >/dev/null 2>&1; then
   printf '%s\n' 'python3 is required for complexity'
   exit 2
@@ -42,8 +40,8 @@ for path in "${files[@]}"; do
     continue
   fi
 
-  uvx "radon@${RADON_VERSION:-6.0.1}" cc -s -j "$base_source" >"$base_json"
-  uvx "radon@${RADON_VERSION:-6.0.1}" cc -s -j "$path" >"$head_json"
+  "$runner" cc -s -j "$base_source" >"$base_json"
+  "$runner" cc -s -j "$path" >"$head_json"
 
   python3 -c '
 import json, sys

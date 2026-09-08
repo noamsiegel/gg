@@ -9,10 +9,7 @@
 
 set -euo pipefail
 
-if ! command -v uvx >/dev/null 2>&1; then
-  printf '%s\n' 'uvx is required for architecture'
-  exit 2
-fi
+source "$(dirname "$0")/runners"
 
 cd "$GG_ROOT"
 has_contracts=0
@@ -29,10 +26,11 @@ if (( has_contracts == 0 )); then
   exit 2
 fi
 
+gg_require_runner python lint-imports
 output=$(mktemp)
 trap 'rm -f "$output"' EXIT
 status=0
-uvx --from "import-linter@${IMPORT_LINTER_VERSION:-2.3}" lint-imports --no-cache >"$output" || status=$?
+"$runner" --no-cache >"$output" || status=$?
 
 # Import-linter uses 1 for broken contracts. Its dashed sections contain the
 # contract name followed by the human-readable violation details.

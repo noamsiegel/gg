@@ -1,0 +1,19 @@
+# Shared prepared-runner lookup. Reviews never invoke package managers.
+gg_tools_dir="${GG_TOOLS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/gg-tools}"
+
+gg_require_runner() {
+  case "$1" in
+    python) runner="$gg_tools_dir/python/bin/$2" ;;
+    js)
+      if ! command -v node >/dev/null 2>&1; then
+        printf '%s\n' 'node is required for JavaScript checks; install node, then run gg setup'
+        exit 2
+      fi
+      runner="$gg_tools_dir/js/node_modules/.bin/$2"
+      ;;
+  esac
+  if [[ ! -x "$runner" ]]; then
+    printf '%s\n' "$2 is not prepared; run gg setup"
+    exit 2
+  fi
+}

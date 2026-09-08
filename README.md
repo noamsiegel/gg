@@ -28,15 +28,34 @@ gg self-update
 | `gg --since <ref>` | Current work against an arbitrary ref |
 | `gg guard pre-push [-- <pathspec>...]` | Push range with the two blocking publication checks, optionally scoped |
 | `gg self-update` | Installed checkout via `git pull --ff-only` |
-| `gg --version` | Installed version |
+| `gg --version` | Installed version and Git revision |
+| `gg setup` | Explicitly prepare pinned analysis runners |
+| `gg --json [review arguments]` | Structured results for agents |
+| `gg --timeout <seconds> [review arguments]` | Bound each check (default 120 seconds) |
 
 Base resolution is: an explicit override, `origin/HEAD`, `origin/main`, `origin/master`, `origin/develop`, then `HEAD~1`.
 
 Scoped staged and pre-push forms require the `--` separator. Git interprets each pathspec relative to the directory where `gg` was invoked and applies it while reading the index or pushed commit range. Forms without pathspecs keep their full existing scope.
 
-JavaScript health uses Fallow's combined analysis for `--staged` and selected paths, reporting findings only in selected files. These scoped modes report existing findings too, not just regressions. Staged JavaScript analysis reads a temporary snapshot of the entire Git index, so unstaged repairs cannot hide staged defects and unchanged indexed imports retain context. Ignored dependencies and untracked files are not copied into that snapshot; dependency installation and runtime verification remain outside this static review. Branch mode keeps the base-relative audit.
+All staged checks read a temporary snapshot of the entire Git index. Unstaged repairs cannot hide staged defects, and unchanged indexed imports retain context. The snapshot has its own Git index and references shared read-only objects for baseline comparisons. Ignored dependencies and untracked files are not copied; dependency installation and runtime verification remain outside this static review.
 
-A skipped or errored check marks the summary `coverage incomplete`; zero findings does not mean all checks ran.
+JavaScript health uses Fallow's combined analysis for `--staged` and selected paths, reporting findings only in selected files, including existing findings. Branch mode keeps the base-relative audit. `NO_COLOR` disables terminal colors when nonempty.
+
+### Runner setup and lifecycle
+
+Install `uv`, `bun`, `node`, GNU `timeout` (`coreutils`; `gtimeout` is also accepted), and `gitleaks` through your package manager, then run `gg setup`. Setup installs pinned analysis tools under `${GG_TOOLS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/gg-tools}` and prepares the vendored plugin inside GG's installation. Reviews invoke these prepared binaries directly and never run package managers. Missing runners produce an actionable skip. `jq` is required only for JSON output and automatic update detection.
+
+Every check has a 120-second deadline, adjustable with `--timeout`. GNU timeout terminates the process group and escalates after two seconds. Ctrl-C exits 130, stops child work and removes the review snapshot. A timeout is an error with incomplete coverage. Ordinary findings remain advisory; an unavailable publication check blocks the push guard because it did not establish safety.
+
+### Results for agents
+
+`gg --json --staged` emits JSON on stdout with `schema_version: 1`, `mode`, `base`, `update`, `checks`, and `summary`. Each check has `name`, `status` (`completed`, `skipped`, or `error`), and either `findings` (strings) or `reason`. The summary includes counts and `coverage_complete`. No matching checks produces an empty array. A branch with no resolvable base produces incomplete coverage and a reason. Invalid CLI arguments still fail on stderr. The pre-push guard emits one JSON object per reviewed ref when JSON is requested.
+
+Human summaries explicitly say `coverage incomplete` for skipped or errored checks. Zero findings does not mean every check ran.
+
+### Update notices
+
+Normal reviews check public GitHub revision metadata at most once per 24 hours per installed revision, with a two-second network bound. An available update appears on stderr, including in non-interactive use, and in the JSON `update` field with `command: "gg self-update"`. Failed/offline checks report `unknown` and are cached too. CI and push guards do not check online. Set `GG_NO_UPDATE_CHECK=1` to disable checks; no repository code or data is sent. Cache lives under `${XDG_CACHE_HOME:-$HOME/.cache}/gg`. Updates are never installed automatically. Older GG versions without this notifier need a one-time `gg self-update` before they can show notices.
 
 Normal review commands always exit `0`, including when they find issues or a check errors. `gg guard` exits non-zero on a blocking finding.
 
@@ -44,15 +63,15 @@ Normal review commands always exit `0`, including when they find issues or a che
 
 | Check | Tool | Scope | What it catches |
 |---|---|---|---|
-| `python-bugs` | Ruff `0.14.2` via `uvx` | `*.py`, `*.pyi` | Undefined names, undefined exports, and source I/O errors using an isolated bug-only rule set |
-| `dead-code` | Vulture via `uvx` | `*.py` | Likely unused Python code; scans the whole repository, then reports only findings in changed files |
-| `complexity` | Radon via `uvx` | `*.py` | Complexity regressions in changed functions relative to the base |
-| `architecture` | import-linter via `uvx` | `*.py` | Violated import contracts, only when the repository already provides contracts |
-| `js-health` | Fallow `2.79.0` via `npx` | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Base-relative findings for branches; whole-project analysis filtered to selected files for paths and the index |
-| `anti-slop` | Oxlint `1.78.0` via `npx` with vendored [anti-slop](https://github.com/dmmulroy/anti-slop) rules | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Low-evidence patterns: unparsed `unknown`/`object` inputs, chained or undocumented type assertions, `unknown`-valued dictionaries, module mocks. Runs a fixed rule set with the repository's own Oxlint config ignored |
+| `python-bugs` | Ruff `0.14.2` prepared by `gg setup` | `*.py`, `*.pyi` | Undefined names, undefined exports, and source I/O errors using an isolated bug-only rule set |
+| `dead-code` | Vulture prepared by `gg setup` | `*.py` | Likely unused Python code; scans the whole repository, then reports only findings in changed files |
+| `complexity` | Radon prepared by `gg setup` | `*.py` | Complexity regressions in changed functions relative to the base |
+| `architecture` | import-linter prepared by `gg setup` | `*.py` | Violated import contracts, only when the repository already provides contracts |
+| `js-health` | Prepared Fallow `2.79.0` | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Base-relative findings for branches; whole-project analysis filtered to selected files for paths and the index |
+| `anti-slop` | Prepared Oxlint `1.78.0` with vendored [anti-slop](https://github.com/dmmulroy/anti-slop) rules | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Low-evidence patterns: unparsed `unknown`/`object` inputs, chained or undocumented type assertions, `unknown`-valued dictionaries, module mocks. Runs a fixed rule set with the repository's own Oxlint config ignored |
 | `secrets` | Gitleaks on `PATH` | All changed files | Secrets in current work; also runs in the blocking pre-push guard |
 
-Missing runners do not fail a review. The summary identifies skipped checks, which is why the installer reports whether `uvx`, `npx`, and `gitleaks` are available. The `anti-slop` check installs its one vendored dependency (`@oxlint/plugins`) under `checks/anti-slop/plugin` the first time it reviews JS/TS files, using `npm`; if `npm` is absent or offline that check skips cleanly and nothing is written into the repository under review.
+Missing prepared runners do not fail an advisory review; their skips are explicit. Setup is the only package-installing operation. Run `gg setup` again to prepare a changed pin after updating GG.
 
 ## Adding a check
 
@@ -68,7 +87,7 @@ Use `# gg-globs: *` to receive every changed file. The core filters the file lis
 |---|---|
 | `GG_ROOT` | Absolute repository top level |
 | `GG_INVOKE_DIR` | Absolute directory where `gg` was invoked |
-| `GG_BASE` | Resolved base ref in branch mode; empty otherwise |
+| `GG_BASE` | Resolved base in branch mode; staged checks receive the snapshot HEAD; empty otherwise |
 | `GG_RANGE` | Git revision expression in range mode; pre-push uses `<local-sha> --not --remotes`; empty otherwise |
 | `GG_LOCAL_REF` | Exact local ref token from pre-push stdin; empty outside the guard |
 | `GG_FILES` | Newline-separated repository-relative Git paths matching the declared globs; never empty and may name deleted range files |
