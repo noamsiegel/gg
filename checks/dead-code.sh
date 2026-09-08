@@ -30,7 +30,7 @@ done < <(git ls-files --cached --others --exclude-standard -- '*.py')
 
 if (( ${#python_files[@]} == 0 )); then
   printf '%s\n' 'no Python files outside excluded directories'
-  exit 2
+  exit 4
 fi
 
 output=$(mktemp)

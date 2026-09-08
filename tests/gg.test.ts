@@ -259,7 +259,7 @@ describe('file-set and base selection', () => {
 
     const result = gg(repo);
 
-    expect(result.status, combined(result)).toBe(0);
+    expect(result.status, combined(result)).toBe(2);
     expect(combined(result)).toContain('no base ref could be resolved');
   });
 });
@@ -294,7 +294,7 @@ describe('dispatch and check protocol', () => {
 
     const result = run(join(harness, 'gg'), ['sample.x'], { cwd: repo, env: testEnv() });
 
-    expect(result.status, combined(result)).toBe(0);
+    expect(result.status, combined(result)).toBe(2);
     expect(result.stdout).toContain('a-skip\n  (skipped: runner intentionally absent)');
     expect(result.stdout).toContain('b-error\n  (error: analysis crashed)');
     expect(result.stdout).not.toContain('skipped: analysis crashed');
@@ -314,7 +314,7 @@ describe('dispatch and check protocol', () => {
 
     const result = gg(repo, ['app.py', 'app.ts'], { env: testEnv({ PATH: bin, GG_TOOLS_DIR: join(repo, 'absent-tools') }) });
 
-    expect(result.status, combined(result)).toBe(0);
+    expect(result.status, combined(result)).toBe(2);
     expect(result.stdout).toContain('run gg setup');
     expect(result.stdout).toContain('node is required');
     expect(result.stdout).toContain('gitleaks is not available');
@@ -778,7 +778,7 @@ describe('Python check regressions', () => {
 
     const result = directCheck(repo, 'architecture', 'app.py');
 
-    expect(result.status, combined(result)).toBe(2);
+    expect(result.status, combined(result)).toBe(4);
     expect(result.stdout).toContain('contract');
     expect(snapshot(repo)).toEqual(before);
     expect(existsSync(join(repo, '.importlinter'))).toBe(false);
@@ -967,7 +967,7 @@ describe('CLI reliability', () => {
       'c.sh': '#!/bin/bash\n# gg-globs: *\necho broken; exit 3\n',
     });
     const r = run(cli, ['--json', 'a.x'], { cwd: repo, env: testEnv() });
-    expect(r.status).toBe(0);
+    expect(r.status).toBe(2);
     const report = JSON.parse(r.stdout);
     expect(report.checks.map((x: {status: string}) => x.status)).toEqual(['completed', 'skipped', 'error']);
     expect(report.checks[0].findings).toEqual(['a.x:1: "quoted"']);
@@ -988,6 +988,7 @@ describe('CLI reliability', () => {
     const pidFile = join(repo, 'pid');
     const started = Date.now();
     const r = run(cli, ['--json', '--timeout', '1', 'a.x'], { cwd: repo, env: testEnv({ PID_FILE: pidFile }) });
+    expect(r.status).toBe(2);
     expect(Date.now() - started).toBeLessThan(5000);
     expect(JSON.parse(r.stdout).checks[0].status).toBe('error');
     expect(JSON.parse(r.stdout).checks[0].reason).toContain('exceeded 1 seconds');
@@ -1020,7 +1021,7 @@ describe('CLI presentation and snapshot boundaries', () => {
     expect(JSON.parse(good.stdout).checks[0].findings).toEqual(['a.x: indexed']);
     writeFileSync(join(dirname(cli),'snapshot.sh'),'#!/bin/bash\nexit 1\n');
     const failed=run(cli,['--staged','--json'],{cwd:repo,env:testEnv()});
-    expect(failed.status).toBe(0);
+    expect(failed.status).toBe(2);
     expect(JSON.parse(failed.stdout).checks[0].status).toBe('error');
     expect(JSON.parse(failed.stdout).summary.coverage_complete).toBe(false);
   });
@@ -1045,3 +1046,14 @@ describe('CLI presentation and snapshot boundaries', () => {
     expect(plain.stdout).toContain('a.x: finding');
   });
 });
+
+ test('not applicable checks do not hide execution failures or count as incomplete', () => {
+   const repo = newRepo(); write(repo, 'a.x', 'x'); commit(repo);
+   const cli = isolatedGg({ 'na.sh': '#!/bin/bash\n# gg-globs: *\necho no-contract; exit 4\n' });
+   const result = run(cli, ['--json', 'a.x'], { cwd: repo, env: testEnv() });
+   expect(result.status).toBe(0);
+   const report = JSON.parse(result.stdout);
+   expect(report.checks[0].status).toBe('not_applicable');
+   expect(report.summary.not_applicable).toBe(1);
+   expect(report.summary.coverage_complete).toBe(true);
+ });

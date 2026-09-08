@@ -5,7 +5,7 @@ Architecture context for people and agents working on `gg`. For the user-facing 
 ## Load-bearing invariants
 
 1. **No repository footprint**: `gg` reads the repository under review but never installs files into it, changes Git configuration, or authors repository configuration.
-2. **Advisory reviews exit successfully**: normal `gg` review commands always exit `0`. Findings and check errors are report content, not gates. Only `gg guard pre-push` is blocking.
+2. **Findings are advisory; execution failures are not**: completed reviews exit `0` even with findings. Missing required analysis or errors exit `2`; not-applicable checks do not count against coverage. The publication guard keeps its existing blocking status.
 3. **Checks self-describe their scope**: every executable `checks/*.sh` has one `# gg-globs:` header. The core owns discovery and filters `GG_FILES` before invocation.
 4. **Presentation has one owner**: checks print finding records or one skip reason. Headers, grouping, errors, skipped status, and the final summary live only in the core CLI.
 5. **No per-repository configuration authorship**: checks either need no configuration or honor a contracts file the repository already owns. `gg` never creates, edits, or recommends generated repository configuration.
@@ -62,3 +62,6 @@ Two consequences distinguish it from the Python checks. First, Oxlint ships with
 
 
 ADR-012 - predictable review execution: supersedes ADR-011 lazy installation. `gg setup` explicitly prepares pinned runners; review adapters call only prepared executables. The core owns a full indexed-source snapshot for every staged check, process-group deadlines and cancellation, and jq serialization of structured results. Git conversion attributes are disabled only inside the disposable snapshot. GNU timeout bounds both snapshot preparation and each check. Missing safety checks block the publication guard; advisory reviews remain nonblocking. Public update metadata is optional, cached and bounded, never an automatic code update.
+
+### ADR 013: Stable distribution and execution status
+User-approved 2026-09-08: supersedes earlier always-zero review and main-tracking update contracts. Execution failures return 2, findings remain advisory, and adapter exit 4 denotes not-applicable. Publish version tags only after CI passes; every distribution path resolves the same stable GitHub release. Major version 2 signals the caller-visible status change.

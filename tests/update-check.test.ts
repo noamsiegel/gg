@@ -31,7 +31,9 @@ function fixture() {
   }
   git('init', '-q');
   git('config', 'core.hooksPath', '/dev/null');
-  git('commit', '--allow-empty', '-qm', 'fixture');
+  writeFileSync(join(repo, 'gg'), 'GG_VERSION="1.0.0"\n');
+  git('add', 'gg');
+  git('commit', '-qm', 'fixture');
   const installed = git('rev-parse', 'HEAD');
   writeFileSync(join(bin, 'curl'), `#!/bin/sh
 printf '%s\\n' "$*" >> "$GG_UPDATE_TEST_ROOT/calls"
@@ -39,11 +41,11 @@ cat "$GG_UPDATE_TEST_ROOT/response"
 exit "$(cat "$GG_UPDATE_TEST_ROOT/status")"
 `);
   chmodSync(join(bin, 'curl'), 0o755);
-  function response(value: { sha: string }, status = 0) {
-    writeFileSync(join(root, 'response'), JSON.stringify(value));
+  function response(value: { tag_name: string, draft?: boolean, prerelease?: boolean }, status = 0) {
+    writeFileSync(join(root, 'response'), JSON.stringify({ draft: false, prerelease: false, ...value }));
     writeFileSync(join(root, 'status'), String(status));
   }
-  response({ sha: 'f'.repeat(40) });
+  response({ tag_name: 'v2.0.0' });
   function run(extra = {}) {
     const result = spawnSync('/bin/bash', [script, repo], { env: { ...env, ...extra }, encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
@@ -56,19 +58,19 @@ exit "$(cat "$GG_UPDATE_TEST_ROOT/status")"
 test('reports update metadata with bounded request and reuses the paired cache', () => {
   const f = fixture();
   const result = f.run();
-  expect(result).toEqual({ status: 'available', installed_revision: f.installed, latest_revision: 'f'.repeat(40), command: 'gg self-update' });
+  expect(result).toEqual({ status: 'available', installed_revision: f.installed, latest_revision: null, latest_version: 'v2.0.0', command: 'gg self-update' });
   expect(f.run()).toEqual(result);
   expect(f.calls()).toHaveLength(1);
   expect(f.calls()[0]).toContain('--connect-timeout 2 --max-time 2');
-  expect(f.calls()[0]).toContain('https://api.github.com/repos/noamsiegel/gg/commits/main');
+  expect(f.calls()[0]).toContain('https://api.github.com/repos/noamsiegel/gg/releases/latest');
   f.git('commit', '--allow-empty', '-qm', 'new installed revision');
   expect(f.run().installed_revision).not.toBe(f.installed);
   expect(f.calls()).toHaveLength(2);
 });
 
-test('recognizes matching and locally ahead revisions', () => {
+test('recognizes the installed release version', () => {
   const f = fixture();
-  f.response({ sha: f.installed });
+  f.response({ tag_name: 'v1.0.0' });
   expect(f.run().status).toBe('current');
   f.git('commit', '--allow-empty', '-qm', 'local change');
   expect(f.run().status).toBe('current');
@@ -83,12 +85,12 @@ test('disabled check does not read cache or make a request', () => {
 
 test('rejects remote data and expires unknown cache entries after a day', () => {
   const f = fixture();
-  f.response({ sha: '$(touch unsafe)' });
+  f.response({ tag_name: '$(touch unsafe)' });
   expect(f.run().latest_revision).toBe(null);
-  f.response({ sha: 'f'.repeat(40) });
+  f.response({ tag_name: 'v2.0.0' });
   expect(f.run().status).toBe('unknown');
   expect(f.calls()).toHaveLength(1);
-  const cache = join(f.env.XDG_CACHE_HOME, 'gg/update.json');
+  const cache = join(f.env.XDG_CACHE_HOME, 'gg/releases.json');
   const contents = JSON.parse(readFileSync(cache, 'utf8'));
   writeFileSync(cache, JSON.stringify({ ...contents, checked_at: 1 }));
   expect(f.run().status).toBe('available');
@@ -97,7 +99,7 @@ test('rejects remote data and expires unknown cache entries after a day', () => 
 
 test('a failed request cannot supply an otherwise valid revision', () => {
   const f = fixture();
-  f.response({ sha: 'f'.repeat(40) }, 22);
+  f.response({ tag_name: 'v2.0.0' }, 22);
   expect(f.run().status).toBe('unknown');
   expect(f.run().latest_revision).toBe(null);
   expect(f.calls()).toHaveLength(1);

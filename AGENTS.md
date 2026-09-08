@@ -23,7 +23,7 @@ The core invokes a check only when at least one changed file matches. It provide
 
 Checks emit only findings in `path:line: message` or `path: message` form. They must not print headings, banners, summaries, or blank lines. Exit `0` means the check ran, including when findings exist. Exit `2` means a required runner is unavailable and must include one short reason on stdout. Any other exit means the check itself errored.
 
-Normal `gg` review is advisory and always exits `0`. Only `gg guard pre-push` is blocking, and it is limited to secrets and large files.
+Completed `gg` reviews exit `0` even with findings. Incomplete execution exits `2`; check exit `4` means not applicable. `gg guard pre-push` retains blocking exit `1` for findings or unavailable protection, limited to secrets and large files.
 
 ## Documentation index
 

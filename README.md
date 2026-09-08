@@ -1,6 +1,6 @@
 # gg
 
-`gg` is a personal reviewer for your current work. Run it on demand to inspect a branch, the index, or selected paths. It reports findings and always exits successfully, so heuristics can be useful without breaking a commit.
+`gg` is a personal reviewer for your current work. Run it on demand to inspect a branch, the index, or selected paths. Findings remain advisory; incomplete execution returns nonzero so automation can distinguish a review from a failed attempt.
 
 `gg` never installs into a repository, never writes repository files, and never touches `core.hooksPath`.
 
@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/noamsiegel/gg/main/install.sh | bash
 ```
 
-The installer clones to `${GG_HOME:-$HOME/.local/share/gg}` and links the executable at `${BIN_DIR:-$HOME/.local/bin}/gg`. It requires `git` and `bash`, but not `sudo`. Re-running it updates the checkout with `git pull --ff-only`.
+The installer clones to `${GG_HOME:-$HOME/.local/share/gg}` and links the executable at `${BIN_DIR:-$HOME/.local/bin}/gg`. It requires `git` and `bash`, but not `sudo`. Re-running it installs the latest published stable release. Local modifications or commits outside the release history are preserved by refusing the update.
 
 Update later with:
 
@@ -27,7 +27,7 @@ gg self-update
 | `gg --staged [-- <pathspec>...]` | The index, optionally scoped |
 | `gg --since <ref>` | Current work against an arbitrary ref |
 | `gg guard pre-push [-- <pathspec>...]` | Push range with the two blocking publication checks, optionally scoped |
-| `gg self-update` | Installed checkout via `git pull --ff-only` |
+| `gg self-update` | Latest published stable release |
 | `gg --version` | Installed version and Git revision |
 | `gg setup` | Explicitly prepare pinned analysis runners |
 | `gg --json [review arguments]` | Structured results for agents |
@@ -49,15 +49,15 @@ Every check has a 120-second deadline, adjustable with `--timeout`. GNU timeout 
 
 ### Results for agents
 
-`gg --json --staged` emits JSON on stdout with `schema_version: 1`, `mode`, `base`, `update`, `checks`, and `summary`. Each check has `name`, `status` (`completed`, `skipped`, or `error`), and either `findings` (strings) or `reason`. The summary includes counts and `coverage_complete`. No matching checks produces an empty array. A branch with no resolvable base produces incomplete coverage and a reason. Invalid CLI arguments still fail on stderr. The pre-push guard emits one JSON object per reviewed ref when JSON is requested.
+`gg --json --staged` emits JSON on stdout with `schema_version: 1`, `mode`, `base`, `update`, `checks`, and `summary`. Each check has `name`, `status` (`completed`, `not_applicable`, `skipped`, or `error`), and either `findings` (strings) or `reason`. The summary includes counts and `coverage_complete`. No matching checks produces an empty array. A branch with no resolvable base produces incomplete coverage and a reason. Invalid CLI arguments still fail on stderr. The pre-push guard emits one JSON object per reviewed ref when JSON is requested.
 
 Human summaries explicitly say `coverage incomplete` for skipped or errored checks. Zero findings does not mean every check ran.
 
 ### Update notices
 
-Normal reviews check public GitHub revision metadata at most once per 24 hours per installed revision, with a two-second network bound. An available update appears on stderr, including in non-interactive use, and in the JSON `update` field with `command: "gg self-update"`. Failed/offline checks report `unknown` and are cached too. CI and push guards do not check online. Set `GG_NO_UPDATE_CHECK=1` to disable checks; no repository code or data is sent. Cache lives under `${XDG_CACHE_HOME:-$HOME/.cache}/gg`. Updates are never installed automatically. Older GG versions without this notifier need a one-time `gg self-update` before they can show notices.
+Normal reviews check public GitHub stable-release metadata at most once per 24 hours per installed revision, with a two-second network bound. An available update appears on stderr, including in non-interactive use, and in the JSON `update` field with `command: "gg self-update"`. Failed/offline checks report `unknown` and are cached too. CI and push guards do not check online. Set `GG_NO_UPDATE_CHECK=1` to disable checks; no repository code or data is sent. Cache lives under `${XDG_CACHE_HOME:-$HOME/.cache}/gg`. Updates are never installed automatically. Older GG versions without this notifier need a one-time `gg self-update` before they can show notices.
 
-Normal review commands always exit `0`, including when they find issues or a check errors. `gg guard` exits non-zero on a blocking finding.
+Normal reviews exit `0` when applicable checks complete, even with findings; exit `2` means incomplete execution (missing runner, failed check, timeout, or missing baseline for branch selection). Invalid usage exits `1`; cancellation exits `130`/`143`. Checks that do not apply are excluded from required coverage. `gg guard` retains exit `1` for blocking findings or unavailable protection.
 
 ## Review roster
 
@@ -71,7 +71,7 @@ Normal review commands always exit `0`, including when they find issues or a che
 | `anti-slop` | Prepared Oxlint `1.78.0` with vendored [anti-slop](https://github.com/dmmulroy/anti-slop) rules | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Low-evidence patterns: unparsed `unknown`/`object` inputs, chained or undocumented type assertions, `unknown`-valued dictionaries, module mocks. Runs a fixed rule set with the repository's own Oxlint config ignored |
 | `secrets` | Gitleaks on `PATH` | All changed files | Secrets in current work; also runs in the blocking pre-push guard |
 
-Missing prepared runners do not fail an advisory review; their skips are explicit. Setup is the only package-installing operation. Run `gg setup` again to prepare a changed pin after updating GG.
+Missing prepared runners make review execution incomplete and return exit `2`; their reasons are explicit. Setup is the only analysis-package-installing operation. Run `gg setup` again to prepare a changed pin after updating GG.
 
 ## Adding a check
 
@@ -100,6 +100,7 @@ For scoped staged and pre-push reviews, checks also receive the unchanged separa
 |---|---|
 | `0` | Check ran; stdout may contain findings |
 | `2` | Required runner or tool is unavailable; stdout contains one short reason |
+| `4` | Check does not apply; stdout explains why and coverage remains complete |
 | Any other value | Check errored; the core reports an error, not a finding |
 
 ## Blocking publication guard
@@ -113,7 +114,7 @@ gg guard pre-push -- apps/hoa
 
 It runs only secrets and large-file checks over the push range. The scoped form still scans selected history, including a secret or large blob introduced and deleted within that range. A local commit is recoverable; a push is publication. Those two checks protect irreversible history and credential exposure, so they block before publication. No other advisory check does.
 
-This global hook is user-managed; `gg` does not install hooks or enter repositories. Repository-owned hooks may invoke advisory review modes, but advisory findings and check errors still exit `0` and cannot block a commit.
+This global hook is user-managed; `gg` does not install hooks or enter repositories. Repository-owned hooks may invoke advisory review modes, but must distinguish advisory findings (exit `0`) from incomplete execution (exit `2`).
 
 ## What it doesn't do
 
@@ -121,3 +122,7 @@ This global hook is user-managed; `gg` does not install hooks or enter repositor
 - It never authors or modifies per-repository tool configuration. A check may honor an import-linter contracts file the repository already owns.
 - It does not provide a plugin framework. Executable checks and their small protocol are the extension seam.
 - It does not provide server-side enforcement. Normal reviews are advisory and intentionally skippable.
+
+## Release policy
+
+Stable tags use `vMAJOR.MINOR.PATCH` matching `GG_VERSION`. Tag CI runs the full suite before publishing the GitHub release. Install, self-update, and update notices use the latest published non-prerelease release, never the moving main branch. No release means installation fails with an actionable error rather than silently installing development code. Version 2 changes execution exit codes; callers that previously assumed every review succeeded must handle exit 2 or inspect JSON coverage.

@@ -5,7 +5,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-GG_VERSION="1.2.0"
+GG_VERSION="2.0.0"
 GG_JSON=false
 GG_TIMEOUT=120
 GG_UPDATE='{"status":"unknown"}'
@@ -36,9 +36,11 @@ Usage:
   gg setup                       Install pinned review runners explicitly
   gg --json [review arguments]    Emit structured check results (requires jq)
   gg --timeout SECONDS [...]      Per-check limit (default 120, GNU timeout)
-  gg self-update                  Fast-forward the gg installation
+  gg self-update                  Install the latest stable release
   gg --version                    Print the installed version
   gg --help                       Show this help
+
+Exit status: 0 completed (findings are advisory), 2 incomplete execution.
 
 Examples:
   gg --staged -- src/
@@ -171,7 +173,9 @@ style_heading() {
 render_check() {
   local name=$1 output=$2 status=$3
   style_heading "$name"
-  if [[ $status -eq 2 ]]; then
+  if [[ $status -eq 4 ]]; then
+    printf '  (not applicable: %s)\n' "$output"
+  elif [[ $status -eq 2 ]]; then
     printf '  (skipped: %s)\n' "${output:-required tool unavailable}"
   elif [[ $status -ne 0 ]]; then
     printf '  (error: %s)\n' "${output:-check exited with status $status}"
@@ -184,7 +188,7 @@ render_check() {
 
 run_checks() {
   local guard=$1 check name files output status line_count check_root
-  local findings=0 ran_checks=0 skipped=0 errors=0 blocked=0 runner_pid=""
+  local findings=0 ran_checks=0 skipped=0 not_applicable=0 errors=0 blocked=0 runner_pid=""
   local -a checks=()
   local scratch timeout_bin
   local GG_BASE=$GG_BASE
@@ -250,7 +254,9 @@ run_checks() {
     fi
     output=$(cat "$scratch/output")
     local result_status=completed
-    if [[ $status -eq 2 ]]; then
+    if [[ $status -eq 4 && "$guard" == false ]]; then
+      result_status=not_applicable; not_applicable=$((not_applicable + 1))
+    elif [[ $status -eq 2 ]]; then
       result_status=skipped; skipped=$((skipped + 1)); $guard && blocked=1
     elif [[ $status -ne 0 ]]; then
       result_status=error; errors=$((errors + 1)); blocked=1
@@ -268,10 +274,11 @@ run_checks() {
     fi
   done
   if $GG_JSON; then
-    jq -s --argjson update "$GG_UPDATE" --arg mode "$GG_MODE" --arg base "$GG_BASE" --argjson findings "$findings" --argjson completed "$ran_checks" --argjson skipped "$skipped" --argjson errors "$errors" \
-      '{schema_version:1,mode:$mode,base:$base,update:$update,checks:.,summary:{findings:$findings,completed:$completed,skipped:$skipped,errors:$errors,coverage_complete:($skipped==0 and $errors==0)}}' "$scratch/results"
+    jq -s --argjson update "$GG_UPDATE" --arg mode "$GG_MODE" --arg base "$GG_BASE" --argjson findings "$findings" --argjson completed "$ran_checks" --argjson skipped "$skipped" --argjson errors "$errors" --argjson not_applicable "$not_applicable" \
+      '{schema_version:1,mode:$mode,base:$base,update:$update,checks:.,summary:{findings:$findings,completed:$completed,skipped:$skipped,errors:$errors,not_applicable:$not_applicable,coverage_complete:($skipped==0 and $errors==0)}}' "$scratch/results"
   else
     printf '\n%s findings across %s checks' "$findings" "$ran_checks"
+    [[ $not_applicable -gt 0 ]] && printf ' · %s not applicable' "$not_applicable"
     [[ $skipped -gt 0 ]] && printf ' · %s skipped' "$skipped"
     [[ $errors -gt 0 ]] && printf ' · %s errors' "$errors"
     [[ $skipped -gt 0 || $errors -gt 0 ]] && printf ' · coverage incomplete'
@@ -280,6 +287,7 @@ run_checks() {
   cleanup
   trap - EXIT INT TERM
   if $guard && [[ $blocked -ne 0 ]]; then return 1; fi
+  if [[ $skipped -gt 0 || $errors -gt 0 ]]; then return 2; fi
   return 0
 }
 
@@ -307,8 +315,7 @@ review() {
   $GG_JSON || printf 'gg  %s  (%s file%s)\n' "$label" "$count" "$([[ $count -eq 1 ]] || printf 's')"
   local result=0
   run_checks false || result=$?
-  [[ $result -eq 130 || $result -eq 143 ]] && exit "$result"
-  return 0
+  return "$result"
 }
 
 guard_pre_push() {
@@ -351,15 +358,7 @@ guard_pre_push() {
 }
 
 self_update() {
-  if ! git -C "$GG_SELF_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    printf 'gg: install directory is not a git checkout: %s\n' "$GG_SELF_DIR" >&2
-    exit 1
-  fi
-  if [[ -n "$(git -C "$GG_SELF_DIR" status --porcelain)" ]]; then
-    printf 'gg: refusing to update because install directory has local modifications\n' >&2
-    exit 1
-  fi
-  git -C "$GG_SELF_DIR" pull --ff-only
+  GG_HOME="$GG_SELF_DIR" "${BASH:-bash}" "$GG_SELF_DIR/install.sh"
 }
 
 main() {
@@ -437,7 +436,7 @@ main() {
     "")
       GG_BASE=$(resolve_base) || {
         if $GG_JSON; then printf '%s\n' '{"schema_version":1,"mode":"branch","checks":[],"summary":{"coverage_complete":false},"reason":"no base ref could be resolved"}'; else printf 'gg: no base ref could be resolved; nothing to review\n'; fi
-        exit 0
+        exit 2
       }
       review
       ;;

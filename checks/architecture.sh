@@ -23,7 +23,7 @@ fi
 
 if (( has_contracts == 0 )); then
   printf '%s\n' 'no import-linter contracts in this repo'
-  exit 2
+  exit 4
 fi
 
 gg_require_runner python lint-imports

@@ -9,15 +9,16 @@
 set -euo pipefail
 
 source "$(dirname "$0")/runners"
+if [[ -z "$GG_BASE" ]]; then
+  printf '%s\n' 'no baseline for complexity comparison'
+  exit 4
+fi
 gg_require_runner python radon
 if ! command -v python3 >/dev/null 2>&1; then
   printf '%s\n' 'python3 is required for complexity'
   exit 2
 fi
 
-if [[ -z "$GG_BASE" ]]; then
-  exit 0
-fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

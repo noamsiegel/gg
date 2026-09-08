@@ -17,19 +17,32 @@ fail() {
   exit 1
 }
 
-for required in git bash; do
+for required in git bash curl jq; do
   command -v "$required" >/dev/null 2>&1 || fail "required command '$required' was not found on PATH"
 done
+
+# A release tag is the distribution boundary, never the moving default branch.
+release=$(curl --fail --silent --show-error --location --connect-timeout 2 --max-time 10 \
+  --header 'Accept: application/vnd.github+json' \
+  https://api.github.com/repos/noamsiegel/gg/releases/latest |
+  jq -er 'select(.draft == false and .prerelease == false) | .tag_name |
+    select(type == "string" and test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))') || fail "no valid stable release is available; installation unchanged"
 
 mkdir -p "$(dirname "$GG_HOME")" "$BIN_DIR"
 
 if [[ -d "$GG_HOME/.git" ]]; then
-  git -C "$GG_HOME" pull --ff-only
-elif [[ -e "$GG_HOME" ]]; then
-  fail "install path exists but is not a gg Git checkout: $GG_HOME"
+  [[ -z "$(git -C "$GG_HOME" status --porcelain)" ]] || fail "installation has local changes; preserve or commit them before updating"
+  git -C "$GG_HOME" fetch --no-tags "$REPO_URL" "refs/tags/$release"
+  target=$(git -C "$GG_HOME" rev-parse 'FETCH_HEAD^{commit}')
+  git -C "$GG_HOME" merge-base --is-ancestor HEAD "$target" || fail "release does not contain the installed revision; refusing to discard local commits or downgrade"
 else
-  git clone "$REPO_URL" "$GG_HOME"
+  [[ ! -e "$GG_HOME" ]] || fail "install path exists but is not a gg Git checkout: $GG_HOME"
+  git clone --branch "$release" --single-branch "$REPO_URL" "$GG_HOME"
+  target=$(git -C "$GG_HOME" rev-parse HEAD)
 fi
+version=$(git -C "$GG_HOME" show "$target:gg" | sed -n 's/^GG_VERSION="\([^" ]*\)"$/\1/p')
+[[ "v$version" == "$release" ]] || fail "release tag does not match the executable version; refusing update"
+git -C "$GG_HOME" checkout --detach "$target"
 
 [[ -f "$GG_HOME/gg" ]] || fail "checkout does not contain the gg executable: $GG_HOME/gg"
 chmod +x "$GG_HOME/gg"
