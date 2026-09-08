@@ -5,7 +5,7 @@ Architecture context for people and agents working on `gg`. For the user-facing 
 ## Load-bearing invariants
 
 1. **No repository footprint**: `gg` reads the repository under review but never installs files into it, changes Git configuration, or authors repository configuration.
-2. **Findings are advisory; execution failures are not**: completed reviews exit `0` even with findings. Missing required analysis or errors exit `2`; not-applicable checks do not count against coverage. The publication guard keeps its existing blocking status.
+2. **Findings are advisory; execution failures are not**: completed reviews exit `0` even with findings. Missing required analysis or errors exit `1`; not-applicable checks do not count against coverage. The publication guard keeps its existing blocking status.
 3. **Checks self-describe their scope**: every executable `checks/*.sh` has one `# gg-globs:` header. The core owns discovery and filters `GG_FILES` before invocation.
 4. **Presentation has one owner**: checks print finding records or one skip reason. Headers, grouping, errors, skipped status, and the final summary live only in the core CLI.
 5. **No per-repository configuration authorship**: checks either need no configuration or honor a contracts file the repository already owns. `gg` never creates, edits, or recommends generated repository configuration.

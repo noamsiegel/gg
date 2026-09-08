@@ -49,7 +49,7 @@ Every check has a 120-second deadline, adjustable with `--timeout`. GNU timeout 
 
 ### Results for agents
 
-`gg --json --staged` emits JSON on stdout with `schema_version: 1`, `mode`, `base`, `update`, `checks`, and `summary`. Each check has `name`, `status` (`completed`, `not_applicable`, `skipped`, or `error`), and either `findings` (strings) or `reason`. The summary includes counts and `coverage_complete`. No matching checks produces an empty array. A branch with no resolvable base produces incomplete coverage and a reason. Invalid CLI arguments still fail on stderr. The pre-push guard emits one JSON object per reviewed ref when JSON is requested.
+`gg --json --staged` emits JSON on stdout with `schema_version: 1`, `mode`, `base`, `update`, `checks`, and `summary`. Each check has `name`, `status` (`completed`, `not_applicable`, `skipped`, or `error`), and either `findings` (strings) or `reason`. The summary includes counts and `coverage_complete`. No matching checks produces an empty array. A branch with no resolvable base produces incomplete coverage and a reason. Invalid CLI arguments produce structured usage errors with `--json` and diagnostics otherwise. The pre-push guard emits one JSON object per reviewed ref when JSON is requested.
 
 Human summaries explicitly say `coverage incomplete` for skipped or errored checks. Zero findings does not mean every check ran.
 
@@ -57,7 +57,7 @@ Human summaries explicitly say `coverage incomplete` for skipped or errored chec
 
 Normal reviews check public GitHub stable-release metadata at most once per 24 hours per installed revision, with a two-second network bound. An available update appears on stderr, including in non-interactive use, and in the JSON `update` field with `command: "gg self-update"`. Failed/offline checks report `unknown` and are cached too. CI and push guards do not check online. Set `GG_NO_UPDATE_CHECK=1` to disable checks; no repository code or data is sent. Cache lives under `${XDG_CACHE_HOME:-$HOME/.cache}/gg`. Updates are never installed automatically. Older GG versions without this notifier need a one-time `gg self-update` before they can show notices.
 
-Normal reviews exit `0` when applicable checks complete, even with findings; exit `2` means incomplete execution (missing runner, failed check, timeout, or missing baseline for branch selection). Invalid usage exits `1`; cancellation exits `130`/`143`. Checks that do not apply are excluded from required coverage. `gg guard` retains exit `1` for blocking findings or unavailable protection.
+Normal reviews exit `0` when applicable checks complete, even with findings; exit `1` means incomplete execution (missing runner, failed check, timeout, or missing baseline for branch selection). Invalid usage exits `2`; cancellation exits `130`/`143`. Checks that do not apply are excluded from required coverage. `gg guard` retains exit `1` for blocking findings or unavailable protection.
 
 ## Review roster
 
@@ -71,7 +71,7 @@ Normal reviews exit `0` when applicable checks complete, even with findings; exi
 | `anti-slop` | Prepared Oxlint `1.78.0` with vendored [anti-slop](https://github.com/dmmulroy/anti-slop) rules | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Low-evidence patterns: unparsed `unknown`/`object` inputs, chained or undocumented type assertions, `unknown`-valued dictionaries, module mocks. Runs a fixed rule set with the repository's own Oxlint config ignored |
 | `secrets` | Gitleaks on `PATH` | All changed files | Secrets in current work; also runs in the blocking pre-push guard |
 
-Missing prepared runners make review execution incomplete and return exit `2`; their reasons are explicit. Setup is the only analysis-package-installing operation. Run `gg setup` again to prepare a changed pin after updating GG.
+Missing prepared runners make review execution incomplete and return exit `1`; their reasons are explicit. Setup is the only analysis-package-installing operation. Run `gg setup` again to prepare a changed pin after updating GG.
 
 ## Adding a check
 
@@ -114,7 +114,7 @@ gg guard pre-push -- apps/hoa
 
 It runs only secrets and large-file checks over the push range. The scoped form still scans selected history, including a secret or large blob introduced and deleted within that range. A local commit is recoverable; a push is publication. Those two checks protect irreversible history and credential exposure, so they block before publication. No other advisory check does.
 
-This global hook is user-managed; `gg` does not install hooks or enter repositories. Repository-owned hooks may invoke advisory review modes, but must distinguish advisory findings (exit `0`) from incomplete execution (exit `2`).
+This global hook is user-managed; `gg` does not install hooks or enter repositories. Repository-owned hooks may invoke advisory review modes, but must distinguish advisory findings (exit `0`) from incomplete execution (exit `1`).
 
 ## What it doesn't do
 
@@ -125,7 +125,7 @@ This global hook is user-managed; `gg` does not install hooks or enter repositor
 
 ## Release policy
 
-Stable tags use `vMAJOR.MINOR.PATCH` matching `GG_VERSION`. Tag CI runs the full suite before publishing the GitHub release. Install, self-update, and update notices use the latest published non-prerelease release, never the moving main branch. No release means installation fails with an actionable error rather than silently installing development code. Version 2 changes execution exit codes; callers that previously assumed every review succeeded must handle exit 2 or inspect JSON coverage.
+Stable tags use `vMAJOR.MINOR.PATCH` matching `GG_VERSION`. Tag CI runs the full suite before publishing the GitHub release. Install, self-update, and update notices use the latest published non-prerelease release, never the moving main branch. No release means installation fails with an actionable error rather than silently installing development code. Version 2 changes execution exit codes; callers that previously assumed every review succeeded must handle exit 1 or inspect JSON coverage.
 
 ## Agent ergonomics
 
@@ -140,8 +140,10 @@ Reviews show up to 100 findings per check and 1,000 characters per line by defau
 - Empty results: explicit zero-count summary.
 - Errors: machine-readable usage/check failures and nonzero execution status.
 - Context: on-demand `gg`; no harness hooks, per repository policy.
-- Content first: bare `gg` reviews current work.
+- Content first: bare `gg` reviews current work and identifies its executable and purpose.
 - Guidance: contextual next steps accompany results.
-- Help: subcommands expose read-only help.
+- Help: subcommands and `guard pre-push` expose read-only help, including `-h`.
 
-These are applicable principles, not a claim of literal AXI format compliance. JSON compatibility and the no-hooks policy remain intentional. External Git/network setup failures can still originate on stderr; review errors are structured.
+These are applicable principles, not a claim of literal AXI format compliance. JSON compatibility and the no-hooks policy remain intentional. With `--json`, setup and update wrap external failures in a structured stdout result; subprocess diagnostics remain on stderr. Runtime failures exit 1 and usage errors exit 2; interrupts retain 130/143.
+
+Version 3 adopts AXI exit conventions (runtime 1, usage 2). Setup/update JSON outcomes and no-baseline errors include recovery guidance. The live report identifies the executable and purpose. TOON support is pending dependency approval; ambient hooks remain outside scope.

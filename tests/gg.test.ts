@@ -215,7 +215,7 @@ describe('file-set and base selection', () => {
 
     for (const { args, message } of malformed) {
       const result = gg(repo, args);
-      expect(result.status, combined(result)).toBe(1);
+      expect(result.status, combined(result)).toBe(2);
       expect(result.stderr).toContain(message);
     }
   });
@@ -259,7 +259,7 @@ describe('file-set and base selection', () => {
 
     const result = gg(repo);
 
-    expect(result.status, combined(result)).toBe(2);
+    expect(result.status, combined(result)).toBe(1);
     expect(combined(result)).toContain('no base ref could be resolved');
   });
 });
@@ -277,7 +277,7 @@ describe('dispatch and check protocol', () => {
     expect(result.stdout).not.toContain('dead-code');
     expect(result.stdout).not.toContain('complexity');
     expect(result.stdout).not.toContain('architecture');
-    expect(result.stdout).not.toContain('js-health');
+    expect(result.stdout).not.toContain('\njs-health\n');
   });
 
   test('exit 2 is rendered as skipped with reason while other nonzero is error', () => {
@@ -294,7 +294,7 @@ describe('dispatch and check protocol', () => {
 
     const result = run(join(harness, 'gg'), ['sample.x'], { cwd: repo, env: testEnv() });
 
-    expect(result.status, combined(result)).toBe(2);
+    expect(result.status, combined(result)).toBe(1);
     expect(result.stdout).toContain('a-skip\n  (skipped: runner intentionally absent)');
     expect(result.stdout).toContain('b-error\n  (error: analysis crashed)');
     expect(result.stdout).not.toContain('skipped: analysis crashed');
@@ -314,7 +314,7 @@ describe('dispatch and check protocol', () => {
 
     const result = gg(repo, ['app.py', 'app.ts'], { env: testEnv({ PATH: bin, GG_TOOLS_DIR: join(repo, 'absent-tools') }) });
 
-    expect(result.status, combined(result)).toBe(2);
+    expect(result.status, combined(result)).toBe(1);
     expect(result.stdout).toContain('run gg setup');
     expect(result.stdout).toContain('node is required');
     expect(result.stdout).toContain('gitleaks is not available');
@@ -967,7 +967,7 @@ describe('CLI reliability', () => {
       'c.sh': '#!/bin/bash\n# gg-globs: *\necho broken; exit 3\n',
     });
     const r = run(cli, ['--json', 'a.x'], { cwd: repo, env: testEnv() });
-    expect(r.status).toBe(2);
+    expect(r.status).toBe(1);
     const report = JSON.parse(r.stdout);
     expect(report.checks.map((x: {status: string}) => x.status)).toEqual(['completed', 'skipped', 'error']);
     expect(report.checks[0].findings).toEqual(['a.x:1: "quoted"']);
@@ -988,7 +988,7 @@ describe('CLI reliability', () => {
     const pidFile = join(repo, 'pid');
     const started = Date.now();
     const r = run(cli, ['--json', '--timeout', '1', 'a.x'], { cwd: repo, env: testEnv({ PID_FILE: pidFile }) });
-    expect(r.status).toBe(2);
+    expect(r.status).toBe(1);
     expect(Date.now() - started).toBeLessThan(5000);
     expect(JSON.parse(r.stdout).checks[0].status).toBe('error');
     expect(JSON.parse(r.stdout).checks[0].reason).toContain('exceeded 1 seconds');
@@ -1021,7 +1021,7 @@ describe('CLI presentation and snapshot boundaries', () => {
     expect(JSON.parse(good.stdout).checks[0].findings).toEqual(['a.x: indexed']);
     writeFileSync(join(dirname(cli),'snapshot.sh'),'#!/bin/bash\nexit 1\n');
     const failed=run(cli,['--staged','--json'],{cwd:repo,env:testEnv()});
-    expect(failed.status).toBe(2);
+    expect(failed.status).toBe(1);
     expect(JSON.parse(failed.stdout).checks[0].status).toBe('error');
     expect(JSON.parse(failed.stdout).summary.coverage_complete).toBe(false);
   });
@@ -1070,7 +1070,8 @@ describe('CLI presentation and snapshot boundaries', () => {
    const full=run(cli,['--json','--full','a.x'],{cwd:repo,env:testEnv()});
    expect(JSON.parse(full.stdout).checks[0].findings).toHaveLength(105);
    const invalid=run(cli,['--timeout','bad','--json'],{cwd:repo,env:testEnv()});
-   expect(invalid.status).toBe(1);
+   expect(invalid.status).toBe(2);
+   expect(run(cli,['a.x','--invented'],{cwd:repo,env:testEnv()}).status).toBe(2);
    expect(JSON.parse(invalid.stdout).error.code).toBe('usage');
    for (const command of ['setup','self-update','guard']) {
      const help=run(cli,['--full',command,'--help'],{cwd:repo,env:testEnv()});
@@ -1082,4 +1083,27 @@ describe('CLI presentation and snapshot boundaries', () => {
    expect(JSON.parse(long.stdout).checks[0].findings[0]).toContain('truncated, 2000 chars');
    const longFull=run(cli,['--json','--full','a.x'],{cwd:repo,env:testEnv()});
    expect(JSON.parse(longFull.stdout).checks[0].findings[0]).toHaveLength(2000);
+ });
+
+ test('structured operations, live header and nested help use real CLI boundaries', () => {
+   const repo=newRepo(); write(repo,'a.x','x'); commit(repo);
+   const cli=isolatedGg({'ok.sh':'#!/bin/bash\n# gg-globs: *\nexit 0\n'});
+   writeFileSync(join(dirname(cli),'setup.sh'),'#!/bin/bash\necho setup-detail >&2\nexit 7\n');
+   const failed=run(cli,['--json','setup'],{cwd:repo,env:testEnv()});
+   expect(failed.status).toBe(1);
+   expect(JSON.parse(failed.stdout).error.code).toBe('setup');
+   expect(failed.stderr).toContain('setup-detail');
+   writeFileSync(join(dirname(cli),'install.sh'),'#!/bin/bash\necho network-detail >&2\nexit 9\n');
+   const update=run(cli,['--json','self-update'],{cwd:repo,env:testEnv()});
+   expect(update.status).toBe(1);
+   expect(JSON.parse(update.stdout).error.code).toBe('self-update');
+   writeFileSync(join(dirname(cli),'install.sh'),'#!/bin/bash\nexit 0\n');
+   expect(JSON.parse(run(cli,['--json','self-update'],{cwd:repo,env:testEnv()}).stdout).help).toEqual(['gg setup']);
+   const header=run(cli,['--json','a.x'],{cwd:repo,env:testEnv()});
+   expect(JSON.parse(header.stdout).bin).toBe(run('realpath',[cli]).stdout.trim());
+   expect(JSON.parse(header.stdout).description).toContain('Review Git changes');
+   expect(JSON.parse(header.stdout).help[0]).toContain('repository test suite');
+   const nested=run(cli,['guard','pre-push','--help'],{cwd:repo,env:testEnv()});
+   expect(nested.status).toBe(0);
+   expect(nested.stdout).toContain('Usage: gg guard pre-push');
  });

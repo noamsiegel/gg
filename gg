@@ -5,7 +5,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-GG_VERSION="2.0.0"
+GG_VERSION="3.0.0"
 GG_JSON=false
 GG_FULL=false
 GG_TIMEOUT=120
@@ -42,7 +42,7 @@ Usage:
   gg --version                    Print the installed version
   gg --help                       Show this help
 
-Exit status: 0 completed (findings are advisory), 2 incomplete execution.
+Exit status: 0 completed (findings are advisory), 1 incomplete execution.
 
 Examples:
   gg --staged -- src/
@@ -51,14 +51,35 @@ Examples:
 EOF
 }
 
-fail_usage() {
+report_error() {
+  local code=$1 message=$2 status=$3
   if $GG_JSON && command -v jq >/dev/null 2>&1; then
-    jq -cn --arg message "$1" '{schema_version:1,error:{code:"usage",message:$message},help:["gg --help"]}'
+    jq -cn --arg code "$code" --arg message "$message" '{schema_version:1,error:{code:$code,message:$message},help:["gg --help"]}'
   else
-    printf 'gg: %s\n' "$1" >&2
-    usage >&2
+    printf 'gg: %s\nhelp: gg --help\n' "$message" >&2
   fi
-  exit 1
+  return "$status"
+}
+
+fail_usage() {
+  report_error usage "$1" 2
+}
+
+operation() {
+  local name=$1 status=0
+  shift
+  if $GG_JSON; then
+    "$@" >&2 || status=$?
+    if [[ $status -eq 130 || $status -eq 143 ]]; then return "$status"; fi
+    if [[ $status -ne 0 ]]; then
+      report_error "$name" "$name failed; see stderr diagnostics, correct the cause, and rerun gg $name" 1
+      return 1
+    fi
+    jq -cn --arg name "$name" '{schema_version:1,operation:$name,status:"completed",help:(if $name == "self-update" then ["gg setup"] else ["gg --json --staged"] end)}'
+  else
+    "$@" || return 1
+    if [[ "$name" == self-update ]]; then printf 'next: gg setup\n'; else printf 'next: gg --staged\n'; fi
+  fi
 }
 
 resolve_base() {
@@ -292,8 +313,8 @@ run_checks() {
     fi
   done
   if $GG_JSON; then
-    jq -cs --argjson update "$GG_UPDATE" --arg mode "$GG_MODE" --arg base "$GG_BASE" --argjson findings "$findings" --argjson completed "$ran_checks" --argjson skipped "$skipped" --argjson errors "$errors" --argjson not_applicable "$not_applicable" \
-      '{schema_version:1,mode:$mode,base:$base,update:$update,checks:.,summary:{findings:$findings,completed:$completed,skipped:$skipped,errors:$errors,not_applicable:$not_applicable,coverage_complete:($skipped==0 and $errors==0)},help:(if $skipped>0 then ["gg setup, then rerun the same review"] elif $errors>0 then ["Resolve check errors, then rerun the same review"] else ["gg --help"] end)}' "$scratch/results"
+    jq -cs --arg bin "$GG_SELF_DIR/gg" --arg description "Review Git changes with independent static checks" --argjson update "$GG_UPDATE" --arg mode "$GG_MODE" --arg base "$GG_BASE" --argjson findings "$findings" --argjson completed "$ran_checks" --argjson skipped "$skipped" --argjson errors "$errors" --argjson not_applicable "$not_applicable" \
+      '{schema_version:1,bin:$bin,description:$description,mode:$mode,base:$base,update:$update,checks:.,summary:{findings:$findings,completed:$completed,skipped:$skipped,errors:$errors,not_applicable:$not_applicable,coverage_complete:($skipped==0 and $errors==0)},help:(if $skipped>0 then ["gg setup, then rerun the same review"] elif $errors>0 then ["Resolve check errors, then rerun the same review"] elif $findings>0 then ["Inspect reported locations; rerun with the same arguments after changes", "gg --full with the same review arguments"] else ["Run the repository test suite; gg does not execute tests"] end)}' "$scratch/results"
   else
     printf '\n%s findings across %s checks' "$findings" "$ran_checks"
     [[ $not_applicable -gt 0 ]] && printf ' · %s not applicable' "$not_applicable"
@@ -303,20 +324,22 @@ run_checks() {
     printf '\n'
     if [[ $skipped -gt 0 ]]; then printf 'next: gg setup, then rerun the same review\n';
     elif [[ $errors -gt 0 ]]; then printf 'next: resolve check errors, then rerun the same review\n';
-    else printf 'help: gg --help\n'; fi
+    elif [[ $findings -gt 0 ]]; then printf 'next: inspect reported locations, then rerun the same review; use --full for all findings\n';
+    else printf 'next: run the repository test suite; gg does not execute tests\n'; fi
   fi
   cleanup
   trap - EXIT INT TERM
   if $guard && [[ $blocked -ne 0 ]]; then return 1; fi
-  if [[ $skipped -gt 0 || $errors -gt 0 ]]; then return 2; fi
+  if [[ $skipped -gt 0 || $errors -gt 0 ]]; then return 1; fi
   return 0
 }
 
 review() {
-  local label count
-  GG_ROOT=$(repo_root)
+  local label count display_bin="$GG_SELF_DIR/gg"
+  [[ "$display_bin" == "$HOME/"* ]] && display_bin="~${display_bin#$HOME}"
+  GG_ROOT=$(repo_root) || { report_error repository "Run gg inside a Git working tree" 1; return 1; }
   cd "$GG_ROOT"
-  GG_ALL_FILES=$(collect_files)
+  GG_ALL_FILES=$(collect_files) || { report_error git "Could not select review files; verify the Git ref and pathspec" 1; return 1; }
   if [[ -f "$GG_SELF_DIR/update-check.sh" && -z "${CI:-}" ]]; then
     GG_UPDATE=$("${BASH:-bash}" "$GG_SELF_DIR/update-check.sh" "$GG_SELF_DIR")
     if ! $GG_JSON && [[ "$GG_UPDATE" == *'"status":"available"'* ]]; then
@@ -333,6 +356,9 @@ review() {
     paths) label=paths ;;
     range) label="range $GG_RANGE" ;;
   esac
+  if ! $GG_JSON; then
+    printf 'bin: %s\ndescription: Review Git changes with independent static checks\n' "$display_bin"
+  fi
   $GG_JSON || printf 'gg  %s  (%s file%s)\n' "$label" "$count" "$([[ $count -eq 1 ]] || printf 's')"
   local result=0
   run_checks false || result=$?
@@ -341,7 +367,7 @@ review() {
 
 guard_pre_push() {
   local local_ref local_sha remote_ref remote_sha any=0
-  GG_ROOT=$(repo_root)
+  GG_ROOT=$(repo_root) || { report_error repository "Run gg inside a Git working tree" 1; return 1; }
   cd "$GG_ROOT"
   # Git writes pre-push refs space-separated, but this script sets a global
   # IFS of newline+tab. Without restoring space here, the whole line lands in
@@ -370,7 +396,7 @@ guard_pre_push() {
     GG_LOCAL_REF=$local_ref
     GG_RANGE="$local_sha --not --remotes"
     GG_MODE=range
-    GG_ALL_FILES=$(collect_files)
+    GG_ALL_FILES=$(collect_files) || { report_error git "Could not select review files; verify the Git ref and pathspec" 1; return 1; }
     [[ -n "$GG_ALL_FILES" ]] || continue
     $GG_JSON || printf 'gg  guard pre-push  (%s)\n' "$local_ref"
     run_checks true || any=1
@@ -405,12 +431,17 @@ main() {
         [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || fail_usage '--timeout requires positive whole seconds'
         GG_TIMEOUT=$2; shift 2 ;;
       --) arguments+=("$@"); break ;;
+      --staged|--since|--help|-h|--version|-V) arguments+=("$1"); shift ;;
+      -*) fail_usage "unknown option: $1" ;;
       *) arguments+=("$1"); shift ;;
     esac
   done
   if [[ ${#arguments[@]} -gt 0 ]]; then set -- "${arguments[@]}"; else set --; fi
-  if $GG_JSON; then command -v jq >/dev/null 2>&1 || fail_usage '--json requires jq'; fi
-  if [[ $# -eq 2 && "$2" == --help ]]; then
+  if $GG_JSON; then command -v jq >/dev/null 2>&1 || { report_error dependency '--json requires jq; install jq and retry' 1; return 1; }; fi
+  if [[ $# -eq 3 && "$1" == guard && "$2" == pre-push && ( "$3" == --help || "$3" == -h ) ]]; then
+    set -- guard --help
+  fi
+  if [[ $# -eq 2 && ( "$2" == --help || "$2" == -h ) ]]; then
     case "$1" in
       setup) printf 'Usage: gg setup\nPrepare pinned analysis runners; never runs during review.\n'; return ;;
       self-update) printf 'Usage: gg self-update\nInstall latest stable release; refuse local modifications.\n'; return ;;
@@ -462,16 +493,16 @@ main() {
       ;;
     setup)
       [[ $# -eq 1 ]] || fail_usage "setup takes no arguments"
-      "${BASH:-bash}" "$GG_SELF_DIR/setup.sh"
+      operation setup "${BASH:-bash}" "$GG_SELF_DIR/setup.sh"
       ;;
     self-update)
       [[ $# -eq 1 ]] || fail_usage "self-update takes no arguments"
-      self_update
+      operation self-update self_update
       ;;
     "")
       GG_BASE=$(resolve_base) || {
-        if $GG_JSON; then printf '%s\n' '{"schema_version":1,"mode":"branch","checks":[],"summary":{"coverage_complete":false},"reason":"no base ref could be resolved"}'; else printf 'gg: no base ref could be resolved; nothing to review\n'; fi
-        exit 2
+        if $GG_JSON; then printf '%s\n' '{"schema_version":1,"mode":"branch","checks":[],"summary":{"coverage_complete":false},"reason":"no base ref could be resolved","error":{"code":"baseline","message":"No base ref could be resolved"},"help":["gg --staged","gg --since <existing-ref>"]}'; else printf 'gg: no base ref could be resolved; nothing to review\nnext: gg --staged or gg --since <existing-ref>\n'; fi
+        exit 1
       }
       review
       ;;
