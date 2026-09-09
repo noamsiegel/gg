@@ -356,6 +356,50 @@ describe('blocking guard and secrets regression coverage', () => {
     expect(clean.stdout).toBe('');
   });
 
+  test.skipIf(!commandExists('gitleaks'))('offline partial-clone range preserves remote boundaries and deleted unpublished secrets', () => {
+    const upstream = newRepo();
+    write(upstream, 'published.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    const published = commit(upstream, 'published');
+    expect(git(upstream, 'checkout', '-q', '-b', 'unrelated').status).toBe(0);
+    write(upstream, 'unrelated.txt', 'blob outside the scan range\n');
+    commit(upstream, 'unrelated');
+    const missingBlob = git(upstream, 'rev-parse', 'HEAD:unrelated.txt').stdout.trim();
+    expect(git(upstream, 'checkout', '-q', 'main').status).toBe(0);
+    expect(git(upstream, 'config', 'uploadpack.allowFilter', 'true').status).toBe(0);
+
+    const repo = newRepo();
+    const partial = join(repo, 'partial');
+    const clone = git(repo, 'clone', '-q', '--filter=blob:none', '--no-checkout', `file://${upstream}`, partial);
+    expect(clone.status, combined(clone)).toBe(0);
+    expect(git(partial, 'config', 'core.hooksPath', '/dev/null').status).toBe(0);
+    expect(git(partial, 'checkout', '-q', 'main').status).toBe(0);
+    expect(git(partial, 'rev-list', '--objects', '--all', '--missing=print').stdout).toContain(`?${missingBlob}`);
+    // Published objects needed by the scan are local; unrelated promised blobs
+    // stay unavailable. A transport clone would try to repack those blobs too.
+    expect(git(partial, 'remote', 'set-url', 'origin', join(repo, 'offline.git')).status).toBe(0);
+    write(partial, 'clean.txt', 'safe unpublished work\n');
+    const cleanHead = commit(partial, 'clean');
+    const clean = directCheck(partial, 'secrets', 'clean.txt', {
+      GG_BASE: published, GG_RANGE: `${cleanHead} --not --remotes`, GG_MODE: 'range',
+    });
+    expect(clean.status, combined(clean)).toBe(0);
+    expect(clean.stdout).toBe('');
+
+    write(partial, 'unpublished.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    commit(partial, 'unpublished sentinel');
+    rmSync(join(partial, 'unpublished.ts'));
+    const head = commit(partial, 'delete unpublished sentinel');
+    const leak = directCheck(partial, 'secrets', 'clean.txt', {
+      GG_BASE: published, GG_RANGE: `${head} --not --remotes`, GG_MODE: 'range',
+    });
+    expect(leak.status, combined(leak)).toBe(0);
+    expect(leak.stdout).toContain('unpublished.ts');
+    expect(leak.stdout.split('\n').some((line) => line.startsWith('published.ts:'))).toBe(false);
+    expect(leak.stdout).not.toContain(STRIPE_SECRET);
+    expect(git(partial, 'rev-parse', 'refs/remotes/origin/main').stdout.trim()).toBe(published);
+    expect(git(partial, 'rev-list', '--objects', '--all', '--missing=print').stdout).toContain(`?${missingBlob}`);
+  });
+
   test.skipIf(!commandExists('gitleaks'))('first push of a new branch is scanned, not skipped', () => {
     // Regression: a new branch sends an all-zero remote sha. The guard used to
     // fall back to a resolved base ref, and in a fresh repository no base

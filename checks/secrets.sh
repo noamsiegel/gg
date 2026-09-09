@@ -138,7 +138,10 @@ if [[ -n "${GG_RANGE:-}" ]]; then
     # blocks on somebody else's already-published file. `--mirror` maps every ref
     # verbatim, remote-tracking refs included, so the exclusion resolves here the
     # same way it does in the working repository.
-    git clone --quiet --mirror --no-local "$GG_ROOT" "$history_root" 2>>"$stderr_log"
+    # Borrow local objects instead of transport-cloning and repacking every
+    # promised object in a partial clone. The source repository stays alive
+    # until gitleaks finishes using this temporary clone's alternates.
+    git clone --quiet --mirror --shared "$GG_ROOT" "$history_root" 2>>"$stderr_log"
     env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML gitleaks detect \
       --source "$history_root" \
       --log-opts="$GG_RANGE" \
