@@ -142,11 +142,32 @@ if [[ -n "${GG_RANGE:-}" ]]; then
     # promised object in a partial clone. The source repository stays alive
     # until gitleaks finishes using this temporary clone's alternates.
     git clone --quiet --mirror --shared "$GG_ROOT" "$history_root" 2>>"$stderr_log"
-    env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML gitleaks detect \
-      --source "$history_root" \
-      --log-opts="$GG_RANGE" \
-      "${report_args[@]}" >/dev/null 2>>"$stderr_log"
     status=$?
+    # Alternates expose existing objects, not the donor's lazy-fetch settings.
+    # Fetch missing scan objects from its real promisor, never from the donor's
+    # upload-pack (which does not hydrate promised objects for clients).
+    if [[ $status -eq 0 ]]; then
+      while IFS= read -r remote; do
+        [[ "$(git -C "$GG_ROOT" config --bool --get "remote.$remote.promisor")" == true ]] || continue
+        promisor_url=$(git -C "$GG_ROOT" remote get-url "$remote") || { status=3; break; }
+        case "$promisor_url" in
+          /*|*://*|*:*) ;;
+          *) promisor_url="$GG_ROOT/$promisor_url" ;;
+        esac
+        git -C "$history_root" config "remote.$remote.url" "$promisor_url" &&
+          git -C "$history_root" config "remote.$remote.promisor" true &&
+          git -C "$history_root" config "remote.$remote.partialclonefilter" \
+            "$(git -C "$GG_ROOT" config --get "remote.$remote.partialclonefilter" || printf 'blob:none')" ||
+          { status=3; break; }
+      done < <(git -C "$GG_ROOT" remote) 2>>"$stderr_log"
+    fi
+    if [[ $status -eq 0 ]]; then
+      env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML gitleaks detect \
+        --source "$history_root" \
+        --log-opts="$GG_RANGE" \
+        "${report_args[@]}" >/dev/null 2>>"$stderr_log"
+      status=$?
+    fi
   fi
 else
   scan_root="$tmp_dir/source"

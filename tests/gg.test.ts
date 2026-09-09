@@ -400,6 +400,32 @@ describe('blocking guard and secrets regression coverage', () => {
     expect(git(partial, 'rev-list', '--objects', '--all', '--missing=print').stdout).toContain(`?${missingBlob}`);
   });
 
+  test.skipIf(!commandExists('gitleaks'))('partial-clone range hydrates a promised blob needed by the scan', () => {
+    const upstream = newRepo();
+    write(upstream, 'base.txt', 'published clean base\n');
+    const published = commit(upstream, 'published');
+    write(upstream, 'unpublished.ts', `export const token = '${STRIPE_SECRET}';\n`);
+    const unpublished = commit(upstream, 'unpublished sentinel');
+    expect(git(upstream, 'config', 'uploadpack.allowFilter', 'true').status).toBe(0);
+
+    const repo = newRepo();
+    const partial = join(repo, 'partial-needed');
+    const clone = git(repo, 'clone', '-q', '--filter=blob:none', '--no-checkout', `file://${upstream}`, partial);
+    expect(clone.status, combined(clone)).toBe(0);
+    expect(git(partial, 'branch', 'topic', unpublished).status).toBe(0);
+    expect(git(partial, 'update-ref', 'refs/remotes/origin/main', published).status).toBe(0);
+    const missingBlob = git(upstream, 'rev-parse', `${unpublished}:unpublished.ts`).stdout.trim();
+    expect(git(partial, 'rev-list', '--objects', 'topic', '--missing=print').stdout).toContain(`?${missingBlob}`);
+
+    const leak = directCheck(partial, 'secrets', '', {
+      GG_RANGE: `${unpublished} --not --remotes`,
+      GG_MODE: 'range',
+    });
+    expect(leak.status, combined(leak)).toBe(0);
+    expect(leak.stdout).toContain('unpublished.ts');
+    expect(leak.stdout).not.toContain(STRIPE_SECRET);
+  });
+
   test.skipIf(!commandExists('gitleaks'))('first push of a new branch is scanned, not skipped', () => {
     // Regression: a new branch sends an all-zero remote sha. The guard used to
     // fall back to a resolved base ref, and in a fresh repository no base
