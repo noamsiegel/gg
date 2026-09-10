@@ -262,6 +262,9 @@ run_checks() {
       status=2
     else
       (
+        # Hook-local routing must not redirect a check's temporary Git repositories.
+        while IFS= read -r git_env_name; do unset "$git_env_name"; done \
+          < <(git rev-parse --local-env-vars)
         cd "$check_root" || exit 3
         export GG_ROOT="$check_root" GG_INVOKE_DIR GG_BASE GG_RANGE GG_LOCAL_REF GG_MODE GG_FILES="$files"
         if [[ "$GG_MODE" == staged ]]; then export GG_INVOKE_DIR="$check_root" GG_BASE="$(git rev-parse --verify HEAD 2>/dev/null || true)"; fi

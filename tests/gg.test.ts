@@ -646,13 +646,18 @@ describe('blocking guard and secrets regression coverage', () => {
     expect(git(repo, 'update-ref', 'refs/remotes/origin/main', base).status).toBe(0);
     write(repo, 'apps/hoa/safe.txt', 'safe\n');
     const head = commit(repo, 'safe HOA change');
+    const refsBefore = git(repo, 'show-ref').stdout;
+    const indexBefore = readFileSync(join(repo, '.git/index'));
 
     const result = gg(repo, ['guard', 'pre-push', '--', 'apps/hoa'], {
       input: `refs/heads/main ${head} refs/heads/main ${base}\n`,
+      env: testEnv({ GIT_DIR: join(repo, '.git'), GIT_WORK_TREE: repo, GIT_INDEX_FILE: join(repo, '.git/index') }),
     });
 
     expect(result.status, combined(result)).toBe(0);
     expect(result.stdout).toContain('guard pre-push');
+    expect(git(repo, 'show-ref').stdout).toBe(refsBefore);
+    expect(readFileSync(join(repo, '.git/index'))).toEqual(indexBefore);
   });
 
   test.skipIf(!commandExists('gitleaks'))('signed annotated tags are stripped in temporary scoped history', () => {
@@ -1162,10 +1167,15 @@ describe('CLI reliability', () => {
   test('every staged check receives indexed source and unchanged import context', () => {
     const repo = newRepo(); write(repo, 'a.x', 'base'); write(repo, 'context.x', 'context'); commit(repo);
     write(repo, 'a.x', 'staged'); git(repo, 'add', 'a.x'); write(repo, 'a.x', 'unstaged');
+    const indexBefore = readFileSync(join(repo, '.git/index'));
     const cli = isolatedGg({ 'probe.sh': '#!/bin/bash\n# gg-globs: *\nprintf "a.x: %s %s\\n" "$(cat a.x)" "$(cat context.x)"\n' });
-    const r = run(cli, ['--staged', '--json'], { cwd: repo, env: testEnv() });
+    const r = run(cli, ['--staged', '--json'], {
+      cwd: repo,
+      env: testEnv({ GIT_DIR: join(repo, '.git'), GIT_WORK_TREE: repo, GIT_INDEX_FILE: join(repo, '.git/index') }),
+    });
     expect(JSON.parse(r.stdout).checks[0].findings).toEqual(['a.x: staged context']);
     expect(readFileSync(join(repo, 'a.x'), 'utf8')).toBe('unstaged');
+    expect(readFileSync(join(repo, '.git/index'))).toEqual(indexBefore);
   });
   test('timeout terminates the runner and reports incomplete coverage', () => {
     const repo = newRepo(); write(repo, 'a.x', 'x'); commit(repo);
