@@ -72,6 +72,9 @@ Normal reviews exit `0` when applicable checks complete, even with findings; exi
 | `anti-slop` | Prepared Oxlint `1.78.0` with vendored [anti-slop](https://github.com/dmmulroy/anti-slop) rules | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Low-evidence patterns: unparsed `unknown`/`object` inputs, chained or undocumented type assertions, `unknown`-valued dictionaries, module mocks. Runs a fixed rule set with the repository's own Oxlint config ignored |
 | `secrets` | Gitleaks on `PATH` | All changed files | Secrets in current work; also runs in the blocking pre-push guard |
 
+Fallow 2.79.0 does not infer Bun test entry points from `bun:test` imports when a repository has no package metadata; those test files can be reported as `unused-file`.
+`gg` leaves this unsupported-framework advisory visible rather than inventing entry configuration.
+
 Missing prepared runners make review execution incomplete and return exit `1`; their reasons are explicit. Setup is the only analysis-package-installing operation. Run `gg setup` again to prepare a changed pin after updating GG.
 
 ## Adding a check
