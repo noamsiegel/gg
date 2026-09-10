@@ -40,6 +40,8 @@ Explicit path mode includes existing untracked files matched by the requested pa
 
 All staged checks read a temporary snapshot of the entire Git index. Unstaged repairs cannot hide staged defects, and unchanged indexed imports retain context. The snapshot has its own Git index and references shared read-only objects for baseline comparisons. Ignored dependencies and untracked files are not copied; dependency installation and runtime verification remain outside this static review.
 
+Git hook-local routing variables are cleared before checks access temporary repositories. Snapshot creation honors the caller's selected source index, but temporary index and reference writes remain isolated from the caller.
+
 JavaScript health analyzes selected files from their nearest declared workspace root, or from the Git root when no nested workspace owns them. This preserves complete entry graphs while reporting only selected files. Branch mode keeps base-relative audit semantics within the same roots. `NO_COLOR` disables terminal colors when nonempty.
 
 ### Runner setup and lifecycle

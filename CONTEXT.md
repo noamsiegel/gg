@@ -11,6 +11,7 @@ Architecture context for people and agents working on `gg`. For the user-facing 
 5. **No per-repository configuration authorship**: checks either need no configuration or honor a contracts file the repository already owns. `gg` never creates, edits, or recommends generated repository configuration.
 6. **Run scope may differ from report scope**: `dead-code` runs Vulture over the whole repository because whole-program context prevents invented dead-code findings, then filters its report to changed files. Do not optimize this into a changed-files-only run.
 7. **Publication guard stays narrow**: the user's own global pre-push chain may invoke `gg guard pre-push`, which runs only secrets and large-files over the push range.
+8. **Git environment isolation**: hook-local repository, index, and object routing applies only while reading the caller's selected source state. Review checks and temporary repository writes clear Git's declared local environment variables, preventing `-C` from being overridden by the hook's repository context.
 
 ## Module map
 
