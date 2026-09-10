@@ -7,6 +7,8 @@ All notable changes to this project will be documented in this file.
 ### Added
 - `anti-slop` review check: runs the generic [dmmulroy/anti-slop](https://github.com/dmmulroy/anti-slop) Oxlint rules over changed `*.ts`/`*.tsx`/`*.js`/`*.jsx`/`*.mjs`/`*.cjs` files to surface low-evidence patterns (unparsed `unknown`/`object` inputs, chained or undocumented type assertions, `unknown`-valued dictionaries, module mocks). The rule set is fixed and the repository's own Oxlint config is ignored (`--config` + `--disable-nested-config` + `--allow all`, builtin plugins off), so the verdict is repo-independent per ADR-008/ADR-009 (ADR-011). The rules are vendored under `checks/anti-slop/plugin`; their one runtime dependency (`@oxlint/plugins`) is installed lazily inside gg's own checkout on first JS/TS review and the check skips cleanly (exit 2) when `npm` is unavailable. The Effect rule group is intentionally excluded. Oxlint is pinned via `ANTI_SLOP_OXLINT_VERSION` (default `1.78.0`).
 
+## [3.0.2]
+
 ### Fixed
 
 - Include explicitly selected, non-ignored untracked files in path reviews, including pathspecs resolved from nested invocation directories.

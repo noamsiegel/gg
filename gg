@@ -5,7 +5,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-GG_VERSION="3.0.1"
+GG_VERSION="3.0.2"
 GG_JSON=false
 GG_FULL=false
 GG_TIMEOUT=120
