@@ -151,6 +151,25 @@ describe('advisory and repository safety contracts', () => {
 });
 
 describe('file-set and base selection', () => {
+  test('explicit untracked paths reach checks from root and nested cwd without ignored files', () => {
+    const repo = newRepo();
+    write(repo, '.gitignore', 'ignored.tsx\nnode_modules/\n');
+    commit(repo);
+    write(repo, 'app/requests.test.tsx', 'export const request = 1;\n');
+    write(repo, 'app/ignored.tsx', 'ignored\n');
+    write(repo, 'app/node_modules/vendor.tsx', 'vendor\n');
+    const cli = isolatedGg({
+      'selected.sh': '#!/bin/bash\n# gg-globs: *.tsx\nprintf "%s\\n" "$GG_FILES"\n',
+    });
+    for (const cwd of [repo, join(repo, 'app')]) {
+      const prefix = cwd === repo ? 'app/' : '';
+      const result = run(cli, [`${prefix}requests.test.tsx`, `${prefix}ignored.tsx`, `${prefix}node_modules`], { cwd, env: testEnv() });
+      expect(result.status, combined(result)).toBe(0);
+      expect(result.stdout).toContain('app/requests.test.tsx');
+      expect(result.stdout).not.toContain('ignored.tsx');
+      expect(result.stdout).not.toContain('vendor.tsx');
+    }
+  });
   test.skipIf(!commandExists('uvx'))('staged, since, and path modes select different files', () => {
     const repo = newRepo();
     write(repo, 'since.py', 'value = 1\n');
@@ -825,6 +844,67 @@ describe('Python check regressions', () => {
     expect(result.stderr).not.toContain('newline in string');
   });
 
+  test('dead-code exceeds ARG_MAX while retaining whole-program references and selected-only findings', () => {
+    const repo = newRepo();
+    const argMax = Number(run('getconf', ['ARG_MAX']).stdout.trim());
+    expect(argMax).toBeGreaterThan(0);
+    write(repo, 'selected.py', 'def cross_file_live():\n    return 1\n\ndef selected_unused():\n    return 2\n');
+    write(repo, 'caller.py', 'from selected import cross_file_live\nprint(cross_file_live())\ndef unrelated_unused():\n    return 3\n');
+    write(repo, '.gitignore', 'ignored/\n');
+    write(repo, 'ignored/use.py', 'selected_unused()\n');
+    write(repo, 'node_modules/use.py', 'selected_unused()\n');
+    const directory = 'p'.repeat(200);
+    let pathBytes = 0;
+    for (let i = 0; pathBytes <= argMax; i++) {
+      const path = `${directory}/${String(i).padStart(6, '0')}_${'f'.repeat(180)}.py`;
+      write(repo, path, '# padding\n');
+      pathBytes += Buffer.byteLength(path) + 1;
+    }
+    const result = directCheck(repo, 'dead-code', 'selected.py');
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout).toContain('selected_unused');
+    expect(result.stdout).not.toContain('cross_file_live');
+    expect(result.stdout).not.toContain('unrelated_unused');
+    expect(result.stderr).not.toContain('Argument list too long');
+  }, 30000);
+
+  test('dead-code preserves invalid-input failure when other files contain findings', () => {
+    const repo = newRepo();
+    write(repo, 'ordinary/{{ typo }}/invalid.py', 'from {{ module }} import value\n');
+    write(repo, 'unused.py', 'def also_unused():\n    return 1\n');
+    write(repo, 'unrelated.py', 'def unrelated_unused():\n    return 2\n');
+    const result = directCheck(repo, 'dead-code', 'unused.py');
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain('invalid syntax');
+    expect(result.stderr).toContain('ordinary/{{ typo }}/invalid.py');
+    expect(result.stdout).toContain('also_unused');
+    expect(result.stdout).not.toContain('unrelated_unused');
+  });
+
+  test('dead-code analyzes valid type comments and Python around declared cell magics', () => {
+    const repo = newRepo();
+    write(repo, 'typed.py', 'from typing import TypedDict\nclass Action(TypedDict):\n    # type: Actions\n    type: str\ndef live_from_typed():\n    return 1\ndef live_from_hex():\n    return 2\ndef typed_unused():\n    return 3\n');
+    write(repo, 'caller.py', 'from typed import live_from_typed\nprint(live_from_typed())\n');
+    write(repo, 'cookiecutter/cookiecutter.json', '{"project":"fixture"}\n');
+    write(repo, 'cookiecutter/{{ project }}/module.py', 'from {{ module }} import app\n');
+    write(repo, 'hex-cell.py', '# Hex Python cell template\n!uv pip install package\nfrom typed import live_from_hex\nprint(live_from_hex())\n');
+    const result = directCheck(repo, 'dead-code', 'typed.py');
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout).toContain('typed_unused');
+    expect(result.stdout).not.toContain('live_from_typed');
+    expect(result.stdout).not.toContain('live_from_hex');
+    expect(result.stderr).not.toContain('invalid syntax');
+    expect(result.stderr).not.toContain('expected an indented block');
+  });
+
+  test('dead-code is not applicable when repository Python paths are only declared templates', () => {
+    const repo = newRepo();
+    write(repo, 'cookiecutter/cookiecutter.json', '{"project":"fixture"}\n');
+    write(repo, 'cookiecutter/{{ project }}/module.py', 'from {{ module }} import app\n');
+    const result = directCheck(repo, 'dead-code', 'cookiecutter/{{ project }}/module.py');
+    expect(result.status, combined(result)).toBe(4);
+  });
+
   test.skipIf(!commandExists('uvx'))('complexity ignores new functions but reports increased existing complexity', () => {
     const repo = newRepo();
     write(repo, 'existing.py', 'def classify(x):\n    return x\n');
@@ -984,6 +1064,41 @@ describe('scoped JavaScript health', () => {
     expect(result.stdout).toContain('selected.js:');
     expect(result.stdout).not.toContain('unrelated.js');
     expect(result.stdout).not.toContain('skipped');
+  });
+  test.skipIf(!engine)('nested package metadata does not truncate the enclosing entry graph', () => {
+    const repo = newRepo();
+    write(repo, 'package.json', '{"name":"fixture","type":"module","main":"index.js"}\n');
+    write(repo, 'index.js', 'import { live } from "./lib/util.js";\nconsole.log(live());\n');
+    write(repo, 'lib/package.json', '{"type":"module"}\n');
+    write(repo, 'lib/util.js', 'export function live() { return 1; }\n');
+    commit(repo);
+    const result = review(repo, ['lib/util.js']);
+    expect(result.status, combined(result)).toBe(0);
+    expect(result.stdout).not.toContain('unused-file');
+    expect(result.stdout).not.toContain('unused-export:live');
+  });
+  test.skipIf(!engine)('selected paths use their nested workspace entry graph', () => {
+    const repo = newRepo();
+    write(repo, 'unrelated/package.json', '{"name":"unrelated","type":"module","main":"index.js"}\n');
+    write(repo, 'unrelated/index.js', 'console.log("unrelated");\n');
+    write(repo, 'unrelated/selected.js', 'export const unused = 1;\n');
+    write(repo, 'nested/package.json', '{"name":"nested","private":true,"workspaces":["apps/*"]}\n');
+    write(repo, 'nested/apps/admin/package.json', '{"name":"admin","type":"module","main":"src/main.ts"}\n');
+    write(repo, 'nested/apps/admin/src/live.ts', 'export function calledFromEntry(): number { return 1; }\n');
+    write(repo, 'nested/apps/admin/src/main.ts', 'import { calledFromEntry } from "./live";\nconsole.log(calledFromEntry());\n');
+    const base = commit(repo);
+    write(repo, 'nested/apps/admin/src/live.ts', 'export function calledFromEntry(): number { return 2; }\n');
+    commit(repo, 'change live implementation');
+    for (const result of [
+      review(repo, ['unrelated/selected.js', 'nested/apps/admin/src/live.ts']),
+      review(repo, ['--since', base]),
+    ]) {
+      expect(result.status, combined(result)).toBe(0);
+      expect(result.stdout).not.toContain('nested/apps/admin/src/live.ts: unused-file');
+      expect(result.stdout).not.toContain('unused-export:calledFromEntry');
+    }
+    const scoped = review(repo, ['unrelated/selected.js', 'nested/apps/admin/src/live.ts']);
+    expect(scoped.stdout).toContain('unrelated/selected.js: unused-file');
   });
   test.skipIf(!engine)('colon paths retain exact attribution and branch mode still audits', () => {
     const repo = newRepo();

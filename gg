@@ -29,7 +29,7 @@ usage() {
   cat <<'EOF'
 Usage:
   gg                              Review the current branch against its base
-  gg <path>...                    Review tracked files under the given paths
+  gg <path>...                    Review tracked and untracked non-ignored files
   gg --staged [-- <pathspec>...]  Review staged files, optionally scoped
   gg --since <ref>                Review the current branch against <ref>
   gg guard pre-push [-- <pathspec>...]
@@ -153,7 +153,7 @@ collect_files() {
       ;;
     paths)
       git -C "$GG_INVOKE_DIR" -c core.quotePath=false ls-files \
-        --full-name -- "${GG_PATHS[@]}" | existing_files
+        --cached --others --exclude-standard --full-name -- "${GG_PATHS[@]}" | existing_files
       ;;
     range)
       local -a rargs=()

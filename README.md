@@ -36,10 +36,11 @@ gg self-update
 Base resolution is: an explicit override, `origin/HEAD`, `origin/main`, `origin/master`, `origin/develop`, then `HEAD~1`.
 
 Scoped staged and pre-push forms require the `--` separator. Git interprets each pathspec relative to the directory where `gg` was invoked and applies it while reading the index or pushed commit range. Forms without pathspecs keep their full existing scope.
+Explicit path mode includes existing untracked files matched by the requested pathspecs. Git's standard exclusions still omit ignored files and dependencies, including from nested invocation directories.
 
 All staged checks read a temporary snapshot of the entire Git index. Unstaged repairs cannot hide staged defects, and unchanged indexed imports retain context. The snapshot has its own Git index and references shared read-only objects for baseline comparisons. Ignored dependencies and untracked files are not copied; dependency installation and runtime verification remain outside this static review.
 
-JavaScript health uses Fallow's combined analysis for `--staged` and selected paths, reporting findings only in selected files, including existing findings. Branch mode keeps the base-relative audit. `NO_COLOR` disables terminal colors when nonempty.
+JavaScript health analyzes selected files from their nearest declared workspace root, or from the Git root when no nested workspace owns them. This preserves complete entry graphs while reporting only selected files. Branch mode keeps base-relative audit semantics within the same roots. `NO_COLOR` disables terminal colors when nonempty.
 
 ### Runner setup and lifecycle
 
@@ -64,10 +65,10 @@ Normal reviews exit `0` when applicable checks complete, even with findings; exi
 | Check | Tool | Scope | What it catches |
 |---|---|---|---|
 | `python-bugs` | Ruff `0.14.2` prepared by `gg setup` | `*.py`, `*.pyi` | Undefined names, undefined exports, and source I/O errors using an isolated bug-only rule set |
-| `dead-code` | Vulture prepared by `gg setup` | `*.py` | Likely unused Python code; scans the whole repository, then reports only findings in changed files |
+| `dead-code` | Vulture prepared by `gg setup` | `*.py` | Likely unused Python code; scans tracked and non-ignored untracked Python in one analysis context, excludes cookiecutter-owned path templates, preserves ordinary Python around declared cell magics, then reports only selected files |
 | `complexity` | Radon prepared by `gg setup` | `*.py` | Complexity regressions in changed functions relative to the base |
 | `architecture` | import-linter prepared by `gg setup` | `*.py` | Violated import contracts, only when the repository already provides contracts |
-| `js-health` | Prepared Fallow `2.79.0` | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Base-relative findings for branches; whole-project analysis filtered to selected files for paths and the index |
+| `js-health` | Prepared Fallow `2.79.0` | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Base-relative findings for branches; complete nearest-workspace or Git-root analysis filtered to selected files for every mode |
 | `anti-slop` | Prepared Oxlint `1.78.0` with vendored [anti-slop](https://github.com/dmmulroy/anti-slop) rules | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mjs`, `*.cjs` | Low-evidence patterns: unparsed `unknown`/`object` inputs, chained or undocumented type assertions, `unknown`-valued dictionaries, module mocks. Runs a fixed rule set with the repository's own Oxlint config ignored |
 | `secrets` | Gitleaks on `PATH` | All changed files | Secrets in current work; also runs in the blocking pre-push guard |
 
