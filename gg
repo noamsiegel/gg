@@ -217,7 +217,7 @@ run_checks() {
   local guard=$1 check name files output status line_count check_root
   local findings=0 ran_checks=0 skipped=0 not_applicable=0 errors=0 blocked=0 runner_pid=""
   local -a checks=()
-  local scratch timeout_bin
+  local scratch timeout_bin snapshot_failure="" unheld
   local GG_BASE=$GG_BASE
   if [[ "$GG_MODE" == staged ]]; then GG_BASE=$(git rev-parse --verify HEAD 2>/dev/null || true); fi
   scratch=$(mktemp -d) || return 1
@@ -241,11 +241,31 @@ run_checks() {
     while IFS= read -r check; do checks+=("$check"); done < <(find "$GG_CHECKS_DIR" -maxdepth 1 -type f -name '*.sh' -print | sort)
   fi
   check_root=$GG_ROOT
+  : >"$scratch/unheld"
   if [[ "$GG_MODE" == staged && -n "$timeout_bin" ]]; then
-    "$timeout_bin" --kill-after=2 "$GG_TIMEOUT" "${BASH:-bash}" "$GG_SELF_DIR/snapshot.sh" "$GG_ROOT" "$scratch/tree" >"$scratch/output" 2>"$scratch/error" &
+    local snapshot_status=0
+    "$timeout_bin" --kill-after=2 "$GG_TIMEOUT" "${BASH:-bash}" "$GG_SELF_DIR/snapshot.sh" "$GG_ROOT" "$scratch/tree" >"$scratch/unheld" 2>"$scratch/snapshot-error" &
     runner_pid=$!
-    if wait "$runner_pid"; then check_root="$scratch/tree"; else check_root=""; fi
+    wait "$runner_pid" || snapshot_status=$?
     runner_pid=""
+    if [[ $snapshot_status -eq 0 ]]; then
+      check_root="$scratch/tree"
+    else
+      check_root=""
+      if [[ $snapshot_status -eq 124 || $snapshot_status -eq 137 ]]; then
+        snapshot_failure="snapshot exceeded $GG_TIMEOUT seconds"
+      else
+        snapshot_failure=$(sed '/^[[:space:]]*$/d' "$scratch/snapshot-error" | tail -n 1 | cut -c 1-500)
+        snapshot_failure=${snapshot_failure:-snapshot exited with status $snapshot_status}
+      fi
+    fi
+  fi
+  # Indexed paths the snapshot's filesystem could not hold separately, such as
+  # a case-only pair on case-insensitive APFS. Whole-repository checks lose
+  # their context silently otherwise, so the omission is always stated.
+  if [[ -n "$check_root" && -s "$scratch/unheld" ]]; then
+    printf 'gg: staged snapshot cannot hold %s indexed path(s) beside a same-named path on this filesystem: %s\n' \
+      "$(wc -l <"$scratch/unheld" | tr -d ' ')" "$(sed -n '1,5p' "$scratch/unheld" | paste -sd ',' - | sed 's/,/, /g')" >&2
   fi
 
   for check in "${checks[@]}"; do
@@ -255,7 +275,12 @@ run_checks() {
     : >"$scratch/output"
     status=0
     if [[ -z "$check_root" ]]; then
-      printf '%s\n' 'cannot materialize the Git index' >"$scratch/output"
+      printf 'cannot materialize the Git index: %s\n' "$snapshot_failure" >"$scratch/output"
+      status=3
+    elif [[ -s "$scratch/unheld" ]] && unheld=$(printf '%s\n' "$files" | grep -Fx -f "$scratch/unheld"); then
+      # Reviewing another entry's bytes under this name would be a false result.
+      printf 'cannot review %s: the staged snapshot holds another indexed path with the same name on this filesystem\n' \
+        "$(printf '%s\n' "$unheld" | paste -sd ',' - | sed 's/,/, /g')" >"$scratch/output"
       status=3
     elif [[ -z "$timeout_bin" ]]; then
       printf '%s\n' 'GNU timeout is required; install coreutils' >"$scratch/output"

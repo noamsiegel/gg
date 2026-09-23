@@ -39,6 +39,7 @@ Scoped staged and pre-push forms require the `--` separator. Git interprets each
 Explicit path mode includes existing untracked files matched by the requested pathspecs. Git's standard exclusions still omit ignored files and dependencies, including from nested invocation directories.
 
 All staged checks read a temporary snapshot of the entire Git index. Unstaged repairs cannot hide staged defects, and unchanged indexed imports retain context. The snapshot has its own Git index and references shared read-only objects for baseline comparisons. Ignored dependencies and untracked files are not copied; dependency installation and runtime verification remain outside this static review.
+A filesystem can hold fewer names than an index: case-insensitive APFS stores `LOA.pdf` and `loa.pdf` as one file. The snapshot keeps one entry per shared name, states on stderr which indexed paths it could not hold, and reports a check error rather than reviewing another entry's bytes when a check selects one. Other snapshot failures carry Git's last diagnostic line in the check error.
 
 Git hook-local routing variables are cleared before checks access temporary repositories. Snapshot creation honors the caller's selected source index, but temporary index and reference writes remain isolated from the caller.
 

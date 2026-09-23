@@ -115,6 +115,33 @@ function snapshot(repo: string, directory = repo): string[] {
   return entries.sort();
 }
 
+// A case-insensitive filesystem (default APFS) cannot hold two index paths that
+// differ only in case. Tests that need that collision skip where it cannot occur.
+function filesystemFoldsCase(): boolean {
+  const probe = mkdtempSync(join(tmpdir(), 'gg-case-'));
+  try {
+    writeFileSync(join(probe, 'CASE'), '');
+    return existsSync(join(probe, 'case'));
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+}
+const FOLDS_CASE = filesystemFoldsCase();
+
+// Commits `LOA.bin` and `loa.bin` with different bytes. Git can index both;
+// a case-folding filesystem can hold only one of them.
+function caseCollidingRepo(): string {
+  const repo = newRepo();
+  write(repo, 'a.x', 'base');
+  write(repo, 'res/LOA.bin', 'upper');
+  expect(git(repo, 'add', '-A').status).toBe(0);
+  const lower = run('git', ['hash-object', '-w', '--stdin'], { cwd: repo, env: testEnv(), input: 'lower' }).stdout.trim();
+  expect(git(repo, 'update-index', '--add', '--cacheinfo', `100644,${lower},res/loa.bin`).status).toBe(0);
+  expect(git(repo, 'commit', '-q', '-m', 'colliding').status).toBe(0);
+  expect(git(repo, 'ls-files', 'res').stdout).toBe('res/LOA.bin\nres/loa.bin\n');
+  return repo;
+}
+
 afterEach(() => {
   for (const repo of repos.splice(0)) rmSync(repo, { recursive: true, force: true });
 });
@@ -1219,6 +1246,68 @@ describe('CLI presentation and snapshot boundaries', () => {
     expect(failed.status).toBe(1);
     expect(JSON.parse(failed.stdout).checks[0].status).toBe('error');
     expect(JSON.parse(failed.stdout).summary.coverage_complete).toBe(false);
+  });
+  test('snapshot failure reason reaches the check error', () => {
+    const repo=newRepo(); write(repo,'a.x','base'); commit(repo);
+    write(repo,'a.x','indexed'); git(repo,'add','a.x');
+    const cli=isolatedGg({'probe.sh':'#!/bin/bash\n# gg-globs: *.x\ncat a.x\n'});
+    writeFileSync(join(dirname(cli),'snapshot.sh'),'#!/bin/bash\necho "fatal: first" >&2\necho "error: unable to write a.x" >&2\nexit 1\n');
+    const failed=run(cli,['--staged','--json'],{cwd:repo,env:testEnv()});
+    expect(failed.status).toBe(1);
+    expect(JSON.parse(failed.stdout).checks[0].reason).toBe('cannot materialize the Git index: error: unable to write a.x');
+    writeFileSync(join(dirname(cli),'snapshot.sh'),'#!/bin/bash\nexit 5\n');
+    const silent=run(cli,['--staged','--json'],{cwd:repo,env:testEnv()});
+    expect(JSON.parse(silent.stdout).checks[0].reason).toBe('cannot materialize the Git index: snapshot exited with status 5');
+  });
+  test.skipIf(!FOLDS_CASE)('pre-commit staged review in a linked worktree survives case-colliding index paths', () => {
+    // Reproduces the monorepo failure: its index holds LOA.pdf and loa.pdf, so the
+    // snapshot checkout aborted and every staged check errored, in every checkout.
+    const repo=caseCollidingRepo();
+    const worktree=join(mkdtempSync(join(tmpdir(),'gg-linked-')),'wt');
+    repos.push(dirname(worktree));
+    expect(git(repo,'worktree','add','-q','-b','feature',worktree).status).toBe(0);
+    expect(readFileSync(join(worktree,'.git'),'utf8')).toStartWith('gitdir: ');
+    write(worktree,'a.x','indexed');
+    expect(git(worktree,'add','a.x').status).toBe(0);
+    write(worktree,'a.x','unstaged repair');
+    const cli=isolatedGg({'probe.sh':'#!/bin/bash\n# gg-globs: *.x\nprintf "a.x: %s\\n" "$(cat a.x)"\n'});
+    const hooks=join(dirname(cli),'hooks'); const out=join(dirname(cli),'hook');
+    mkdirSync(hooks);
+    // Git runs this with the hook environment it exports for a linked worktree:
+    // GIT_DIR and an absolute GIT_INDEX_FILE under <main>/.git/worktrees/<name>.
+    writeFileSync(join(hooks,'pre-commit'),`#!/bin/bash\n[[ "$GIT_INDEX_FILE" == */worktrees/* ]] || exit 9\nstatus=0\n"${cli}" --staged --json >"${out}.json" 2>"${out}.err" || status=$?\necho "$status" >"${out}.status"\n`);
+    chmodSync(join(hooks,'pre-commit'),0o755);
+    const committed=git(worktree,'-c',`core.hooksPath=${hooks}`,'commit','-q','-m','staged');
+    expect(committed.status,combined(committed)).toBe(0);
+    const report=JSON.parse(readFileSync(`${out}.json`,'utf8'));
+    expect(readFileSync(`${out}.status`,'utf8').trim(),readFileSync(`${out}.err`,'utf8')).toBe('0');
+    expect(report.checks).toEqual([{name:'probe',status:'completed',findings:['a.x: indexed']}]);
+    expect(report.summary.coverage_complete).toBe(true);
+    // The path the filesystem could not hold is stated, never silently dropped.
+    expect(readFileSync(`${out}.err`,'utf8')).toContain('cannot hold 1 indexed path(s) beside a same-named path on this filesystem: res/LOA.bin');
+  });
+  test.skipIf(!FOLDS_CASE)('staged path the snapshot cannot hold is a check error, not a review of other bytes', () => {
+    const repo=caseCollidingRepo();
+    const upper=run('git',['hash-object','-w','--stdin'],{cwd:repo,env:testEnv(),input:'upper staged'}).stdout.trim();
+    expect(git(repo,'update-index','--cacheinfo',`100644,${upper},res/LOA.bin`).status).toBe(0);
+    write(repo,'a.x','indexed'); git(repo,'add','a.x');
+    const cli=isolatedGg({
+      'bytes.sh':'#!/bin/bash\n# gg-globs: *.bin\nwhile IFS= read -r f; do printf "%s: %s\\n" "$f" "$(cat "$f")"; done <<< "$GG_FILES"\n',
+      'probe.sh':'#!/bin/bash\n# gg-globs: *.x\nprintf "a.x: %s\\n" "$(cat a.x)"\n',
+    });
+    const result=run(cli,['--staged','--json'],{cwd:repo,env:testEnv()});
+    expect(result.status).toBe(1);
+    const report=JSON.parse(result.stdout);
+    expect(report.checks[0]).toEqual({name:'bytes',status:'error',reason:'cannot review res/LOA.bin: the staged snapshot holds another indexed path with the same name on this filesystem'});
+    expect(report.checks[1]).toEqual({name:'probe',status:'completed',findings:['a.x: indexed']});
+    expect(report.summary.coverage_complete).toBe(false);
+    // The entry the filesystem does hold is reviewed with its own staged bytes.
+    expect(git(repo,'reset','-q','--','res/LOA.bin').status).toBe(0);
+    const lower=run('git',['hash-object','-w','--stdin'],{cwd:repo,env:testEnv(),input:'lower staged'}).stdout.trim();
+    expect(git(repo,'update-index','--cacheinfo',`100644,${lower},res/loa.bin`).status).toBe(0);
+    const held=run(cli,['--staged','--json'],{cwd:repo,env:testEnv()});
+    expect(held.status,held.stderr).toBe(0);
+    expect(JSON.parse(held.stdout).checks[0]).toEqual({name:'bytes',status:'completed',findings:['res/loa.bin: lower staged']});
   });
   test('update notice reaches noninteractive stderr and JSON without corrupting stdout', () => {
     const repo=newRepo(); write(repo,'a.x','x'); commit(repo);
